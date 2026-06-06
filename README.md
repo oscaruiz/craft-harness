@@ -8,6 +8,8 @@ Do not spend any money on a bankrbot SWARM token.
 
 ## Intent
 
+This `main` branch is documentation-only. For runnable SwarmForge configurations, use the `four-pack` or `six-pack` branches; each contains a specific implementation of the workflow it describes.
+
 SwarmForge is an agent coordination system that facilitates communication between agents working in different git worktrees.
 
 It provides a shared structure for role-specific prompts, worktree assignment, tmux sessions, and message passing so multiple agents can collaborate on the same project without stepping on each other.
@@ -97,6 +99,34 @@ When SwarmForge opens trackable terminal windows or tabs, it also starts a small
 - Closing a non-cleanup terminal surface reopens that surface attached to the same tmux session.
 - Closing the cleanup terminal surface shuts down all configured tmux sessions and closes the remaining tracked surfaces.
 - The watchdog updates `.swarmforge/window-ids` when it reopens a window so shutdown cleanup still targets the current windows.
+
+## Branches
+
+The runnable SwarmForge configurations live on dedicated branches. Choose the branch that matches how much role separation you want in the workflow.
+
+### `four-pack`
+
+`four-pack` is the compact workflow. It keeps the swarm small while preserving a complete delivery path:
+
+- `specifier` turns user intent into precise Gherkin acceptance specifications and asks for approval before handoff.
+- `coder` implements approved behavior slices with TDD, unit tests, and generated acceptance tests.
+- `refactorer` performs behavior-preserving cleanup, coverage improvement, CRAP and DRY review, mutation-site scans, and property-test support.
+- `architect` owns high-level structure, dependency direction, mutation hardening, DRY review, soft Gherkin mutation, and final completion notification.
+
+The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect` -> `specifier`. It is useful when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
+
+### `six-pack`
+
+`six-pack` is the full workflow. It separates each major quality gate into its own role:
+
+- `specifier` turns user intent into accepted Gherkin specifications and end-to-end QA procedures.
+- `coder` implements approved behavior slices with TDD, unit tests, and generated acceptance tests.
+- `cleaner` performs local behavior-preserving cleanup, coverage improvement, CRAP and DRY review, and mutation-site scans.
+- `architect` reviews module structure, boundaries, dependency direction, and property-test coverage.
+- `hardender` performs mutation hardening, language mutation, CRAP and DRY verification, and soft Gherkin mutation.
+- `QA` converts the specifier's QA procedures into executable scripts, runs final user-interface verification, checks handoff consistency, and sends completion notifications.
+
+The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA` -> completion. It is useful when you want each review and verification concern owned by a separate agent.
 
 ## tmux Behavior
 
@@ -201,13 +231,21 @@ In the example above, the agents run in these worktrees:
 
 If a window uses `master` as its worktree name, SwarmForge does not create `.worktrees/master`; that role runs in the main working directory on the `master` branch.
 
+## Window Behavior
+
+Each visible agent window is attached to a tmux session. That means terminal selection, copy, and paste may follow tmux and terminal-emulator rules rather than ordinary text-field behavior. If copy or paste feels unusual, check whether tmux copy mode is active before assuming the agent is stuck.
+
+The first window in `swarmforge.conf` is the cleanup window. Closing that top configured window is the intentional shutdown path: SwarmForge tears down the tmux sessions, closes the remaining tracked windows, and shuts down the swarm.
+
+Closing any other tracked window is non-destructive. The watchdog reopens that window and attaches it back to the same tmux session, so the agent state and terminal history remain intact. This is often the simplest way to recover a window that has landed in an unfamiliar tmux mode or otherwise feels stuck.
+
 ## Examples
 
 The repository includes example swarm definitions under `examples/`.
 
 - `examples/clojureHTW/swarmforge/` shows a layered constitution and agent prompts for a Clojure Hunt The Wumpus project, including a queueing rule for messages that arrive while an agent is busy.
 
-Use these example directories as starting points for project-local `swarmforge/` folders.
+These examples are documentation references only. Start real projects from the `four-pack` or `six-pack` branches so the project receives a complete, runnable SwarmForge configuration.
 
 ## Getting Started
 
