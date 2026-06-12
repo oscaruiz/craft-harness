@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/handoff-lib.sh"
 
 usage() {
-  echo "Usage: send-handoff.sh <target-role> --file <body-file> [--sender <sender-role>] [--type handoff|resend-request]" >&2
+  echo "Usage: send-handoff.sh <target-role> --file <body-file> [--sender <sender-role>] [--type handoff|resend-request] [--priority NN]" >&2
 }
 
 if [[ $# -lt 3 ]]; then
@@ -19,6 +19,7 @@ shift
 BODY_FILE=""
 SENDER_ARG=""
 MESSAGE_TYPE="handoff"
+MESSAGE_PRIORITY="50"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +38,11 @@ while [[ $# -gt 0 ]]; do
       MESSAGE_TYPE="$2"
       shift 2
       ;;
+    --priority)
+      [[ $# -ge 2 ]] || { usage; exit 1; }
+      MESSAGE_PRIORITY="$2"
+      shift 2
+      ;;
     *)
       usage
       exit 1
@@ -46,6 +52,11 @@ done
 
 if [[ "$MESSAGE_TYPE" != "handoff" && "$MESSAGE_TYPE" != "resend-request" ]]; then
   usage
+  exit 1
+fi
+
+if ! handoff_valid_priority "$MESSAGE_PRIORITY"; then
+  echo "Invalid message priority: $MESSAGE_PRIORITY" >&2
   exit 1
 fi
 
@@ -80,6 +91,7 @@ message id: $MESSAGE_ID
 sender role: $SENDER
 target role: $TARGET
 message sequence: $SEQUENCE
+message priority: $MESSAGE_PRIORITY
 branch name: $BRANCH_NAME
 commit hash: $COMMIT_HASH
 

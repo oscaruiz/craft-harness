@@ -36,27 +36,35 @@ if [[ -z "$MESSAGE_FILE" || ! -f "$MESSAGE_FILE" ]]; then
 fi
 
 RECEIVER="$(handoff_role_or_default "$RECEIVER_ARG")"
-MESSAGE="$(< "$MESSAGE_FILE")"
-MESSAGE_TYPE="$(handoff_field "message type" "$MESSAGE_FILE")" || {
+NORMALIZED_FILE="$(handoff_temp_file "receive-handoff")"
+awk '/^message type: (handoff|resend-request)$/ { found = 1 } found { print }' "$MESSAGE_FILE" > "$NORMALIZED_FILE"
+if [[ ! -s "$NORMALIZED_FILE" ]]; then
+  echo "No valid protocol message found" >&2
+  exit 2
+fi
+
+MESSAGE="$(< "$NORMALIZED_FILE")"
+MESSAGE_TYPE="$(handoff_field "message type" "$NORMALIZED_FILE")" || {
   echo "Missing message type" >&2
   exit 2
 }
-MESSAGE_ID="$(handoff_field "message id" "$MESSAGE_FILE")" || {
+MESSAGE_ID="$(handoff_field "message id" "$NORMALIZED_FILE")" || {
   echo "Missing message id" >&2
   exit 2
 }
-SENDER="$(handoff_field "sender role" "$MESSAGE_FILE")" || {
+SENDER="$(handoff_field "sender role" "$NORMALIZED_FILE")" || {
   echo "Missing sender role" >&2
   exit 2
 }
-TARGET="$(handoff_field "target role" "$MESSAGE_FILE")" || {
+TARGET="$(handoff_field "target role" "$NORMALIZED_FILE")" || {
   echo "Missing target role" >&2
   exit 2
 }
-SEQUENCE="$(handoff_field "message sequence" "$MESSAGE_FILE")" || {
+SEQUENCE="$(handoff_field "message sequence" "$NORMALIZED_FILE")" || {
   echo "Missing message sequence" >&2
   exit 2
 }
+MESSAGE_PRIORITY="$(handoff_field "message priority" "$NORMALIZED_FILE" || echo "50")"
 
 if [[ "$TARGET" != "$RECEIVER" ]]; then
   echo "Message target '$TARGET' does not match receiver '$RECEIVER'" >&2
@@ -68,12 +76,17 @@ if ! handoff_valid_message_id "$MESSAGE_ID"; then
   exit 2
 fi
 
+if ! handoff_valid_priority "$MESSAGE_PRIORITY"; then
+  echo "Invalid message priority: $MESSAGE_PRIORITY" >&2
+  exit 2
+fi
+
 if [[ "$MESSAGE_TYPE" == "handoff" ]]; then
-  BRANCH_NAME="$(handoff_field "branch name" "$MESSAGE_FILE")" || {
+  BRANCH_NAME="$(handoff_field "branch name" "$NORMALIZED_FILE")" || {
     echo "Missing branch name" >&2
     exit 2
   }
-  COMMIT_HASH="$(handoff_field "commit hash" "$MESSAGE_FILE")" || {
+  COMMIT_HASH="$(handoff_field "commit hash" "$NORMALIZED_FILE")" || {
     echo "Missing commit hash" >&2
     exit 2
   }
@@ -135,15 +148,15 @@ if [[ "$MESSAGE_TYPE" == "resend-request" ]]; then
   handoff_archive_received "$STREAM" "$SEQUENCE" "$MESSAGE" "processed"
   handoff_append_logbook "received" "$MESSAGE" "received resend request $MESSAGE_ID"
   printf '%06d\n' "$seq_num" > "$last_file"
-  resend_stream="$(handoff_field "resend stream" "$MESSAGE_FILE")" || {
+  resend_stream="$(handoff_field "resend stream" "$NORMALIZED_FILE")" || {
     echo "Missing resend stream" >&2
     exit 2
   }
-  resend_sequences="$(handoff_field "resend sequences" "$MESSAGE_FILE")" || {
+  resend_sequences="$(handoff_field "resend sequences" "$NORMALIZED_FILE")" || {
     echo "Missing resend sequences" >&2
     exit 2
   }
-  resend_target="$(handoff_field "resend target role" "$MESSAGE_FILE")" || {
+  resend_target="$(handoff_field "resend target role" "$NORMALIZED_FILE")" || {
     echo "Missing resend target role" >&2
     exit 2
   }
@@ -156,6 +169,7 @@ if [[ "$MESSAGE_TYPE" == "handoff" ]]; then
   handoff_archive_received "$STREAM" "$SEQUENCE" "$MESSAGE" "processed"
   handoff_append_logbook "received" "$MESSAGE" "received handoff $MESSAGE_ID"
   printf '%06d\n' "$seq_num" > "$last_file"
-  echo "OK to process $MESSAGE_ID"
+  queue_file="$(handoff_queue_accepted "$MESSAGE_PRIORITY" "$STREAM" "$SEQUENCE" "$MESSAGE")"
+  echo "QUEUED $queue_file"
   exit 0
 fi

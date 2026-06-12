@@ -101,6 +101,14 @@ handoff_field() {
   printf '%s' "${line#*: }"
 }
 
+handoff_valid_priority() {
+  local priority="$1"
+  if [[ "$priority" == [0-9][0-9] ]]; then
+    return 0
+  fi
+  return 1
+}
+
 handoff_valid_message_id() {
   local message_id="$1"
   if [[ "$message_id" == [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] ]]; then
@@ -147,4 +155,17 @@ handoff_last_received_file() {
   dir="$(handoff_state_dir)/incoming"
   mkdir -p "$dir"
   echo "$dir/$stream.seq"
+}
+
+handoff_queue_accepted() {
+  local priority="$1"
+  local stream="$2"
+  local sequence="$3"
+  local message="$4"
+  local dir file
+  dir="$(handoff_state_dir)/queue/accepted"
+  mkdir -p "$dir"
+  file="$dir/$priority-$(handoff_id_timestamp)-$stream-$sequence.txt"
+  printf '%s' "$message" > "$file"
+  echo "$file"
 }

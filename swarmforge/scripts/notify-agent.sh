@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  echo "Usage: notify-agent.sh send <target-role> --file <body-file> [--sender <sender-role>]" >&2
+  echo "Usage: notify-agent.sh send <target-role> --file <body-file> [--sender <sender-role>] [--priority NN]" >&2
   echo "       notify-agent.sh receive --file <message-file> [--receiver <receiver-role>]" >&2
   echo "       notify-agent.sh <target-role-or-index> --file <message-file>" >&2
 }
