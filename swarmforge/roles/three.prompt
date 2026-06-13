@@ -6,6 +6,10 @@ one -> two -> three -> four -> five -> six -> one
 
 Use your agent/window name to determine your place in the cycle.
 
+Agent one is the only agent that starts by sending without first receiving a handoff.
+
+Agents two, three, four, five, and six must wait to receive an accepted handoff before sending their handoff to the next agent.
+
 When you receive a handoff, send exactly one handoff to the next agent in the cycle and then stop.
 
 Agent six sends its handoff back to agent one. After agent one receives the handoff from agent six, agent one inspects all agent logbooks and reports whether every expected handoff was sent and received. Then agent one stops without sending another handoff.
