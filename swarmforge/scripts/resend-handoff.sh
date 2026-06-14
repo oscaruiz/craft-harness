@@ -63,7 +63,7 @@ for (( n = start_num; n <= end_num; n++ )); do
     echo "Archived handoff not found: $archived" >&2
     exit 1
   fi
-  notify-agent.sh "$TARGET" --file "$archived"
+  swarm-handoff "$TARGET" --file "$archived"
   handoff_append_logbook "sent" "$(< "$archived")" "resent $STREAM sequence $seq to $TARGET"
   echo "Resent $STREAM $seq"
 done
