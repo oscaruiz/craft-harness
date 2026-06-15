@@ -302,7 +302,7 @@ recipient toward one file and should force queue-order processing.
 Example tmux wake-up:
 
 ```text
-You have new handoff mail. If you are not currently working on a task, run ready_for_next_task.sh.
+You have new handoff mail. If idle, follow your role's receiving rule and run the appropriate ready helper.
 ```
 
 ## Queue Helper Scripts
@@ -418,26 +418,28 @@ NO_TASK
 
 Prompts should instruct agents to follow this loop:
 
-1. When notified, run `ready_for_next_task.sh`.
-2. Use `ready_for_next_batch.sh` only when the user, role prompt,
-   constitution, or current task explicitly directs batch processing.
-3. If it prints `NO_TASK`, stop waiting for work.
-4. If it prints `TASK: <path>`, treat the printed `PAYLOAD` as the task.
-5. If it prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as part of the
+1. When notified, run the ready helper required by your role.
+2. Use `ready_for_next_task.sh` by default.
+3. Use `ready_for_next_batch.sh` when the user, role prompt, or constitution
+   explicitly directs batch processing.
+4. If it prints `NO_TASK`, stop waiting for work.
+5. If it prints `TASK: <path>`, treat the printed `PAYLOAD` as the task.
+6. If it prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as part of the
    current batch in helper-delivered order.
-6. Use only the task information printed by the helper scripts.
-7. If a tmux wake-up arrives while already working on a task, ignore it.
-8. When the task is fully complete, run `done_with_current_task.sh`.
-9. When a batch is fully complete, run `done_with_current_batch.sh`.
-10. Treat `note` handoffs as tasks too; after reading or acting on a note, run
+7. Use only the task information printed by the helper scripts.
+8. If a tmux wake-up arrives while already working on a task, ignore it.
+9. When the task is fully complete, run `done_with_current_task.sh`.
+10. When a batch is fully complete, run `done_with_current_batch.sh`.
+11. Treat `note` handoffs as tasks too; after reading or acting on a note, run
    `done_with_current_task.sh` before accepting any other handoff.
-11. If a done helper prints `TASK: <path>`, treat the printed `PAYLOAD` as the
+12. If a done helper prints `TASK: <path>`, treat the printed `PAYLOAD` as the
    next task.
-12. If a done helper prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as
+13. If a done helper prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as
    part of the next batch in helper-delivered order.
-13. If a done helper prints `NO_TASK`, stop waiting for work.
+14. If a done helper prints `NO_TASK`, stop waiting for work.
 
-On restart, an agent should run `ready_for_next_task.sh` and follow its output.
+On restart, an agent should run the ready helper required by its role and follow
+its output.
 
 Tmux wake-ups are intentionally lossy. They only prompt an idle agent to check
 its durable inbox. A busy agent can ignore them because task completion also
@@ -507,24 +509,19 @@ Delivery should be transaction-like:
 5. If interrupted before completion, retry without duplicating already delivered
    recipient copies.
 
-## Expected Prompt And Script Changes
+## Implemented Helpers
 
-This proposal eliminates the current send/receive/complete command variations.
+The current daemon-backed protocol uses these helper scripts:
 
-Expected changes:
+- `swarm_handoff.sh` validates and queues outbound handoff drafts.
+- `ready_for_next_task.sh` accepts or resumes one current task.
+- `done_with_current_task.sh` completes one current task.
+- `ready_for_next_batch.sh` accepts or resumes one current batch.
+- `done_with_current_batch.sh` completes one current batch.
+- `handoffd` delivers queued outbox files and sends generic wake-ups.
 
-- Replace `send-handoff.sh`, `receive-handoff.sh`, `complete-handoff.sh`, and
-  related request-file flows with:
-  - `swarm_handoff.sh`
-  - `ready_for_next_task.sh`
-  - `done_with_current_task.sh`
-  - `ready_for_next_batch.sh`
-  - `done_with_current_batch.sh`
-  - `handoffd`
-- Update role and constitution prompts to describe the new inbox workflow.
-- Remove prompt instructions that require agents to send tmux notifications.
-- Remove prompt instructions that require agents to write long handoff bodies.
-- Remove logbook requirements once the file audit trail is in place.
+Agents should not use direct tmux notifications, long handoff bodies, logbooks,
+or the removed send/receive/complete/resend wrapper scripts.
 
 ## Finalized Decisions
 

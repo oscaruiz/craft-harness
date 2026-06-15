@@ -301,7 +301,7 @@ write_roles_file() {
 
 check_helper_scripts() {
   local helper
-  for helper in notify-agent.sh send-handoff.sh receive-handoff.sh resend-handoff.sh complete-handoff.sh handoff-lib.sh swarm_handoff.sh ready_for_next_task.sh done_with_current_task.sh handoffd.bb swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh; do
+  for helper in send-handoff.sh receive-handoff.sh resend-handoff.sh complete-handoff.sh handoff-lib.sh swarm_handoff.sh ready_for_next_task.sh done_with_current_task.sh ready_for_next_batch.sh done_with_current_batch.sh handoffd.bb swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh; do
     if [[ ! -x "$SCRIPT_DIR/$helper" ]]; then
       echo -e "${RED}Error:${RESET} Required helper script not found or not executable: $SCRIPT_DIR/$helper"
       exit 1

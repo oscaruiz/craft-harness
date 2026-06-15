@@ -8,7 +8,7 @@
 
 (def poll-ms 1000)
 (def wake-message
-  "You have new handoff mail. If you are not currently working on a task, run ready_for_next_task.sh.")
+  "You have new handoff mail. If idle, follow your role's receiving rule and run the appropriate ready helper.")
 
 (defn usage []
   (binding [*out* *err*]

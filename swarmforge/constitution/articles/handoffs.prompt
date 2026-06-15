@@ -46,9 +46,10 @@ message: <one line, max 80 chars>
 - Do not send tmux notifications directly.
 
 ## Receiving Handoffs
-- When notified, run `ready_for_next_task.sh`.
-- Use `ready_for_next_batch.sh` only when the user, role prompt,
-  constitution, or current task explicitly directs you to process a batch.
+- When notified, run the ready helper required by your role.
+- Use `ready_for_next_task.sh` by default.
+- Use `ready_for_next_batch.sh` when the user, role prompt, or constitution
+  explicitly directs you to process a batch.
 - If it prints `NO_TASK`, stop waiting for work.
 - If it prints `TASK: <path>`, treat the printed `PAYLOAD` as the task.
 - If it prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as part of the
@@ -61,4 +62,4 @@ message: <one line, max 80 chars>
 - If `done_with_current_task.sh` prints `TASK: <path>`, treat the printed `PAYLOAD` as the next task.
 - If `done_with_current_batch.sh` prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as part of the next batch in helper-delivered order.
 - If a done helper prints `NO_TASK`, stop waiting for work.
-- On restart, run `ready_for_next_task.sh` and follow its output.
+- On restart, run the ready helper required by your role and follow its output.
