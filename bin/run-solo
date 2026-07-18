@@ -152,7 +152,7 @@ Every section must be present. Use bullet lines under each heading."
 seed_prompts() {
   mkdir -p "$PROMPTS"
   write_prompt specify "Read task.md at the repository root and inspect the code it refers to. Produce a specification: write spec.md, and write documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on EACH scenario, all under the directory named by the environment variable \$SOLO_SPEC_DIR. Do NOT write production code and do NOT commit anything. $HANDOFF_INSTRUCTIONS"
-  write_prompt code "Implement the approved specification found under \$SOLO_SPEC_DIR (spec.md and the feature files) against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches, do not touch task.md or test.sh). Run the quality gates through the crap.sh and dry.sh wrappers ONLY — never a language quality tool directly and never any mutation testing. $HANDOFF_INSTRUCTIONS"
+  write_prompt code "Implement the approved specification found under \$SOLO_SPEC_DIR (spec.md and the feature files) against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches, do not touch task.md or test.sh). Run the quality gates through the wrappers at the paths in the environment variables \$CRAFT_CRAP and \$CRAFT_DRY, invoked by their absolute path on your changed files (e.g. \"\$CRAFT_CRAP\" sut.sh and \"\$CRAFT_DRY\" sut.sh) — use ONLY these wrappers, never a language quality tool directly and never any mutation testing. $HANDOFF_INSTRUCTIONS"
   write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and carry no prior transcript. Inputs available to you: the approved spec under \$SOLO_SPEC_DIR, the diff at \$SOLO_DIFF, and the prior handoffs under \$SOLO_HANDOFFS_DIR. Run ./test.sh and check that each @-tagged scenario ID from the spec's feature files is satisfied; name those scenario IDs in your handoff. Do NOT modify code and do NOT commit. $HANDOFF_INSTRUCTIONS"
 }
 
@@ -172,6 +172,8 @@ run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
     runner=(bash "$FORK_ROOT/adapters/run-with-timeout" "$PHASE_TIMEOUT" -- "${runner[@]}")
   fi
   PATH="$FORK_ROOT/tools/toy:$PATH" \
+  CRAFT_CRAP="$FORK_ROOT/tools/toy/crap.sh" \
+  CRAFT_DRY="$FORK_ROOT/tools/toy/dry.sh" \
   SOLO_HANDOFF="$HANDOFFS/$name.handoff" \
   SOLO_SPEC_DIR="$SPEC" \
   SOLO_PHASE="$name" \
@@ -252,6 +254,7 @@ approved() {
 # --- code + verify (after approval) -----------------------------------------
 run_code_and_verify() {
   local start
+  seed_prompts   # idempotent — a resumed run picks up the current phase prompts
 
   # code phase — in the project, on the enforced branch.
   start="$(date +%s)"

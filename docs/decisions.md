@@ -270,6 +270,25 @@ The near-zero-cost specify failure was a fixable tooling gap (ours), not an
 environment failure or agent incapability, so the run continues rather than
 stopping — the standing paid-run-failure stop is for blockers we cannot fix.
 
+## D15 — Reach the headless agent's tools by absolute path via env, not PATH (2026-07-18, m4)
+
+The first full B6 solo run completed green on every check except (b): the code
+agent reported "the crap.sh and dry.sh wrappers don't exist anywhere in the
+project or harness tree" and ran no gate, so the durable wrapper log stayed
+empty. Cause: Claude Code's bash tool sources a shell snapshot that **resets
+PATH**, dropping the `tools/toy` entry run-solo prepends — the same class of PATH
+munging m3 hit in the tmux window. Environment variables, however, DO propagate
+(the specify agent wrote to `$SOLO_SPEC_DIR`/`$SOLO_HANDOFF` without trouble).
+
+Ruling: hand a headless agent its out-of-tree tools by **absolute path through an
+env var**, not by PATH. run-solo now exports `CRAFT_CRAP`/`CRAFT_DRY` (absolute
+paths to the wrappers) and the code prompt invokes them as `"$CRAFT_CRAP" sut.sh`;
+the wrappers still mirror into `CRAFT_WRAPPER_LOG` for the inspector. The PATH
+prepend stays for the test fake (which is not Claude and inherits run-solo's PATH
+directly). seed_prompts is now idempotent on resume so a re-run picks up the
+fixed prompts. Like m3's B6, reaching a green real run took iterating on
+real-agent frictions the fakes could not expose — none of them pipeline bugs.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
