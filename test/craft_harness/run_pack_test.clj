@@ -152,7 +152,7 @@
               base (str (:baseline_commit (manifest out)))]
           (is (not= head base) "coder+cleaner must have committed")))
       (testing "the tmux session was torn down"
-        (let [sock (str (fs/path out "tmux.sock"))
+        (let [sock (str/trim (slurp (str (fs/path out "tmux-socket"))))
               hs (sh/sh "bash" "-c" (str "tmux -S '" sock "' has-session 2>/dev/null; echo $?"))]
           (is (not (str/includes? (:out hs) "\n0")) "no session should remain on the private socket"))))))
 
@@ -175,7 +175,7 @@
             "the recorded wake count must exceed the cap"))
       (is (re-find #"(?i)wake|cap" (:all r)) "the failure must name the breaker")
       (testing "the runaway session was torn down by the breaker"
-        (let [sock (str (fs/path out "tmux.sock"))
+        (let [sock (str/trim (slurp (str (fs/path out "tmux-socket"))))
               hs (sh/sh "bash" "-c" (str "tmux -S '" sock "' has-session 2>/dev/null; echo $?"))]
           (is (not (str/includes? (:out hs) "\n0"))))))))
 

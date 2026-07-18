@@ -74,7 +74,14 @@ done < "$CONF"
 
 [[ -e "$OUT" ]] && die "refusing to reuse existing --out $OUT — choose a fresh path"
 mkdir -p "$OUT/logs"
-[[ -n "$SOCKET" ]] || SOCKET="$OUT/tmux.sock"
+# A unix socket path must fit sun_path (~108 chars), so it cannot live under a
+# deep --out. Default to a short /tmp path and record the choice for callers.
+if [[ -z "$SOCKET" ]]; then
+  sockdir="${TMPDIR:-/tmp}/craft-runpack-$(id -u 2>/dev/null || echo u)"
+  mkdir -p "$sockdir"
+  SOCKET="$sockdir/$$.sock"
+fi
+printf '%s\n' "$SOCKET" > "$OUT/tmux-socket"
 MANIFEST="$OUT/manifest.json"
 PHASES_TSV="$OUT/phases.tsv"; : > "$PHASES_TSV"
 REPORT="$OUT/inspect-report.txt"
