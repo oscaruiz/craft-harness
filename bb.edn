@@ -16,6 +16,7 @@
                 (require 'craft-harness.run-pack-test)
                 (require 'craft-harness.handoff-schema-test)
                 (require 'craft-harness.run-solo-test)
+                (require 'craft-harness.inspect-solo-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'craft-harness.launcher-test
@@ -28,5 +29,6 @@
                                                                     'craft-harness.inspect-run-test
                                                                     'craft-harness.run-pack-test
                                                                     'craft-harness.handoff-schema-test
-                                                                    'craft-harness.run-solo-test)]
+                                                                    'craft-harness.run-solo-test
+                                                                    'craft-harness.inspect-solo-test)]
                   (System/exit (+ fail error))))}}}

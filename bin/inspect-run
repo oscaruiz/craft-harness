@@ -56,11 +56,13 @@ fail() { RESULTS+=("FAIL $1: $2"); FAILED=1; }
 
 command -v bb >/dev/null 2>&1 || { echo "inspect-run: babashka (bb) is required" >&2; exit 2; }
 mapfile -t MF < <(bb "$FORK_ROOT/bin/inspect_manifest.bb" "$MANIFEST" \
-                     enforced_branch baseline_commit wake_cap wake_count)
-ENFORCED_BRANCH="${MF[0]:-}"
-BASELINE="${MF[1]:-}"
-WAKE_CAP="${MF[2]:-}"
-WAKE_COUNT="${MF[3]:-}"
+                     pack enforced_branch baseline_commit wake_cap wake_count)
+PACK="${MF[0]:-}"
+ENFORCED_BRANCH="${MF[1]:-}"
+BASELINE="${MF[2]:-}"
+WAKE_CAP="${MF[3]:-}"
+WAKE_COUNT="${MF[4]:-}"
+VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
 
 # --- (a) no mutation invocation in the session logs -----------------------
 
@@ -187,11 +189,58 @@ check_wake_cap() {
   fi
 }
 
+# --- solo-pack (milestone 4): structured handoffs + scenario traceability -----
+
+check_handoffs_solo() {
+  local hd="$SESSION/handoffs" phase h changed
+  for phase in specify code verify; do
+    h="$hd/$phase.handoff"
+    [[ -f "$h" ]] || { fail "handoffs-schema" "missing $phase handoff — the phase did not hand off"; return; }
+  done
+  for phase in specify code verify; do
+    h="$hd/$phase.handoff"; changed=()
+    [[ "$phase" == code ]] && changed=(--changed)
+    if ! bb "$VALIDATE" "$h" "${changed[@]}" 2>"$SESSION/.verr"; then
+      fail "handoffs-schema" "$phase handoff is not schema-valid: $(tr -d '\n' < "$SESSION/.verr")"
+      return
+    fi
+  done
+  pass "handoffs-schema"
+}
+
+# Every Gherkin scenario ID in the approved spec must be referenced by at least
+# one test or verify-phase check (traceability — nothing specified goes unchecked).
+check_scenario_traceability() {
+  local specdir="$SESSION/spec" ids id
+  mapfile -t ids < <(grep -rhoE '@[A-Z][A-Z0-9]*-[0-9]+' "$specdir" 2>/dev/null \
+                       | tr -d '@' | sort -u)
+  if (( ${#ids[@]} == 0 )); then
+    fail "scenario-trace" "no scenario IDs (@ID tags) in the approved spec's Gherkin — nothing to trace"
+    return
+  fi
+  local test_files
+  mapfile -t test_files < <(find "$PROJECT" -type f \( -name '*test*' -o -name '*.feature' \) 2>/dev/null)
+  for id in "${ids[@]}"; do
+    if grep -qE "\b$id\b" "$SESSION/handoffs/verify.handoff" "$LOGS/verify.log" 2>/dev/null; then continue; fi
+    if (( ${#test_files[@]} > 0 )) && grep -qE "\b$id\b" "${test_files[@]}" 2>/dev/null; then continue; fi
+    fail "scenario-trace" "scenario '$id' in the spec is referenced by no test or verify-phase check"
+    return
+  done
+  pass "scenario-trace"
+}
+
+# --- dispatch by pack ---------------------------------------------------------
+
 check_mutation
 check_crap_threshold
 check_commits
-check_handoffs
-check_wake_cap
+if [[ "$PACK" == "solo-pack" ]]; then
+  check_handoffs_solo
+  check_scenario_traceability
+else
+  check_handoffs
+  check_wake_cap
+fi
 
 # --- report ---------------------------------------------------------------
 
@@ -202,12 +251,18 @@ label_of() { # human line per check
     commits-confined)  echo "(c) commits only on the enforced branch, no blacklisted path" ;;
     handoffs)          echo "(d) handoffs well-formed and consumed" ;;
     wake-cap)          echo "(e) wake-up count within the R10 cap" ;;
+    handoffs-schema)   echo "(d) structured handoffs schema-valid and consumed" ;;
+    scenario-trace)    echo "(f) every spec scenario ID is traced to a test or verify check" ;;
     *)                 echo "$1" ;;
   esac
 }
 
-echo "inspect-run — session $SESSION against project $PROJECT"
-echo "  enforced branch: ${ENFORCED_BRANCH:-?}   wake-ups: ${WAKE_COUNT:-?}/${WAKE_CAP:-?}"
+echo "inspect-run — ${PACK:-pack} session $SESSION against project $PROJECT"
+if [[ "$PACK" == "solo-pack" ]]; then
+  echo "  enforced branch: ${ENFORCED_BRANCH:-?}"
+else
+  echo "  enforced branch: ${ENFORCED_BRANCH:-?}   wake-ups: ${WAKE_COUNT:-?}/${WAKE_CAP:-?}"
+fi
 echo
 for r in "${RESULTS[@]}"; do
   status="${r%% *}"; rest="${r#* }"
