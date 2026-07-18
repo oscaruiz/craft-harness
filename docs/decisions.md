@@ -29,6 +29,17 @@ launcher `kill -9`s itself at the named step, and the test iterates every
 step (post-staging, pre-swap, mid-swap). Same guarantee as a wall-clock kill,
 without the flakiness of racing a timer against the script.
 
+## D5 — One-time LF normalization of the whole tree, upstream files included (2026-07-18, m1)
+
+The fork's committed blobs contained CRLF line endings, which break every
+shebang under Linux — the suite could not run at all on the reference
+platform (see D4). `.gitattributes` now forces `* text=auto eol=lf` and the
+tree was renormalized in a single dedicated commit, verified EOL-only with
+`git diff --ignore-cr-at-eol` (empty over upstream paths). This is the one
+sanctioned touch of `swarmforge/scripts/`: content is byte-identical modulo
+`\r`. For future upstream merges set `merge.renormalize=true` (repo-local
+config, not versioned — re-set it after a fresh clone).
+
 ## D4 — Reference platform for the suite and the demo is WSL (2026-07-18, m1)
 
 The dev machine is Windows; supported platforms are macOS/Linux/WSL. The test

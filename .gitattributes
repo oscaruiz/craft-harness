@@ -1,0 +1,2 @@
+# Scripts here run under WSL/Linux from a Windows checkout: always checkout LF.
+* text=auto eol=lf
