@@ -325,6 +325,60 @@ extracted bodies are byte-identical to the former baked strings, so the seeded
 prompts (and the whole existing suite) are unchanged; new tests assert the
 prompts now originate from the branch and that a missing pack/role fails cleanly.
 
+## D17 — DEFECT (OPEN): run-solo's candidate commit is unscoped (R9/R4 gap) (2026-07-18, value checkpoint)
+
+Surfaced by the value checkpoint running solo-pack against a real repo (myCQRS)
+with real working-tree dirt — exactly what the checkpoint exists to expose; the
+fake-agent suite could not, because its toy projects are born clean.
+
+**The defect.** The code phase records the candidate as whatever HEAD is after
+the agent runs (`bin/run-solo:293-294`: `run_phase_with_retries code` then
+`git rev-parse HEAD > candidate_commit`) with **no restriction on the committed
+paths**. The *agent* performs the commit; run-solo only reads HEAD afterward. So
+a pre-existing dirty tree, or an agent that runs `git add -A`, contaminates the
+very commit the verifier (R4) then judges over. R4's premise — "verification
+over immutable state with explicit inputs" — is violated: the state under
+judgment can carry arbitrary unrelated changes.
+
+**Why nothing catches it today.** R9 is a *blacklist* only — the pre-commit hook
+refuses `task.md`, `swarmforge/constitution/`, `adapters/` and off-branch commits
+(`hooks/pre-commit`), but has no *allowlist* of owned paths. `project.prompt`'s
+"work only inside src/core" is **prose fed to the agent**, parsed by no
+executable code (grep: `project.prompt` appears in the harness only as a comment
+in `bin/craft-harness`). So "stay in the declared paths" is a prompt instruction,
+not a control — precisely the anti-pattern CLAUDE.md forbids.
+
+**Required fix (executable, not prompt).** run-solo must scope the candidate
+commit to a declared owned-path set — commit only those paths, or FAIL the run if
+the commit touches anything outside them — with automated negative verification
+(a planted out-of-scope change must turn the run red). Because no machine-readable
+owned-path contract exists yet (see the mechanism finding below), this fix must
+**introduce** that contract, not merely read one. Candidate homes: a structured
+`owns:`/`paths:` field the pack or `project.prompt` declares, enforced by run-solo
+and ideally mirrored as an allowlist in the R9 pre-commit hook.
+
+Status: OPEN. To be fixed in a separate craft-harness session before the value
+checkpoint is treated as measuring a sound harness. Recorded per owner's request.
+
+## D18 — CRLF working-tree pollution on myCQRS is the D5 family, working-tree only (2026-07-18, value checkpoint)
+
+Observed while preparing the checkpoint, recorded here because it gates a clean
+run. myCQRS shows 259 tracked files as modified, but the diff is **pure CR/LF**:
+`file` reports the working-tree copies as CRLF, `git show HEAD:<f>` is LF, and
+`git diff --ignore-cr-at-eol` is empty. `core.autocrlf` and `core.eol` are unset
+and there is no `.gitattributes`, so WSL git converts nothing on checkout — the
+CRs were written by a Windows-side tool (or a native-Windows git with
+`autocrlf=true`) touching files on the shared `/mnt/d` mount. Same environment
+split as D4/D5.
+
+**Milder than D5:** here the *committed blobs are clean LF*; only the working
+tree is polluted (D5 was CRLF in the committed blobs, breaking Linux shebangs).
+Nothing bad is committed. **Durable fix is myCQRS-side, not ours:** myCQRS should
+add its own `.gitattributes` with `* text=auto eol=lf` and renormalize once,
+mirroring D5. Until then a clean baseline needs the working-tree CRLF changes
+discarded — a working-tree reset that belongs to the owner, not the harness. No
+craft-harness code change follows from this note.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
