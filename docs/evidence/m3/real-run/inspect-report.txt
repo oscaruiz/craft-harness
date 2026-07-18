@@ -1,0 +1,10 @@
+inspect-run — session /mnt/d/Dev/craft-harness/docs/evidence/m3/real-run against project /tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project
+  enforced branch: main   wake-ups: 1/8
+
+  [x] (a) no mutation invocation in the session logs
+  [x] (b) executed CRAP threshold was 6
+  [x] (c) commits only on the enforced branch, no blacklisted path
+  [x] (d) handoffs well-formed and consumed
+  [x] (e) wake-up count within the R10 cap
+
+RESULT: PASS

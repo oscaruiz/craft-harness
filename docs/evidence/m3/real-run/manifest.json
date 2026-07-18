@@ -1,0 +1,16 @@
+{
+  "adapter" : "claude",
+  "phase_timeout_s" : null,
+  "enforced_branch" : "main",
+  "adapter_info" : "2.1.214 (Claude Code)",
+  "outcome" : "completed",
+  "session_timeout_s" : "1200",
+  "wake_cap" : "8",
+  "phases" : [ ],
+  "project" : "/tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project",
+  "baseline_commit" : "40ad00a5026e744605692b25a573f83e66b2f437",
+  "duration_s" : "340",
+  "pack" : "two-pack-lite",
+  "wake_count" : "1",
+  "fork_commit" : "36ffcf6f2470667ee1b6d2e4842b2434e669334d"
+}

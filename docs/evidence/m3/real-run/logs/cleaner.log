@@ -1,0 +1,65 @@
+export SWARMFORGE_ROLE=cleaner && export CRAFT_WRAPPER_LOG=/mnt/d/Dev/craft-harn
+ess/docs/evidence/m3/real-run/logs/wrappers.log && export PATH=/mnt/d/Dev/craft-
+harness/tools/toy:/tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a
+1a3-b994fc303d4f/scratchpad/m3-real/project/swarmforge/scripts:/home/oscar/.loca
+l/bin:/home/oscar/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/b
+in:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Users/oscar/AppData/Roami
+ng/Code/User/globalStorage/github.copilot-chat/debugCommand:/mnt/c/Users/oscar/A
+ppData/Roaming/Code/User/globalStorage/github.copilot-chat/copilotCli:/mnt/c/Win
+dows/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System3
+2/WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program\ Files
+\ \(x86\)/NVIDIA\ Corporation/PhysX/Common:/mnt/c/Program\ Files/NVIDIA\ Corpora
+tion/NVIDIA\ NvDLISR:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/Syste
+m32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32
+/OpenSSH/:/mnt/c/Program\ Files/dotnet/:/mnt/c/Program\ Files/Git/cmd:/mnt/c/Pro
+gram\ Files/Docker/Docker/resources/bin:/mnt/c/Users/oscar/AppData/Roaming/nvm:/
+mnt/c/Program\ Files/nodejs:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program\ Fi
+les\ \(x86\)/Google/Cloud\ SDK/google-cloud-sdk/bin:/mnt/c/Program\ Files/nodejs
+/:/mnt/c/Program\ Files/Calibre2/:/mnt/c/Program\ Files/GitHub\ CLI/:/mnt/c/User
+s/oscar/AppData/Local/Programs/Python/Python311/Scripts/:/mnt/c/Users/oscar/AppD
+ata/Local/Programs/Python/Python311/:/mnt/c/Users/oscar/AppData/Local/Programs/P
+ython/Python38/Scripts/:/mnt/c/Users/oscar/AppData/Local/Programs/Python/Python3
+8/:/mnt/c/Users/oscar/AppData/Local/Microsoft/WindowsApps:/mnt/c/Program\ Files\
+ \(x86\)/GnuWin32/bin:/mnt/c/MinGW/bin:/mnt/c/Users/oscar/AppData/Local/Programs
+/Microsoft\ VS\ Code/bin:/mnt/c/Users/oscar/AppData/Roaming/nvm:/mnt/c/Program\
+Files/nodejs:/mnt/c/Users/oscar/AppData/Local/GitHubDesktop/bin:/mnt/c/Users/osc
+ar/AppData/Roaming/npm:/mnt/c/Users/oscar/.local/bin:/snap/bin:"$PATH" && cd /tm
+p/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scra
+tchpad/m3-real/project && claude --append-system-prompt-file /tmp/claude-1000/-m
+nt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/p
+roject/swarmforge/roles/cleaner.prompt --permission-mode acceptEdits -n SwarmFor
+ge\ cleaner "$(cat /mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/prompts/cl
+eaner.instruction)"
+oscar@DELL:/mnt/d/Dev/craft-harness$ export SWARMFORGE_ROLE=cleaner && export CR
+AFT_WRAPPER_LOG=/mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/logs/wrappers
+.log && export PATH=/mnt/d/Dev/craft-harness/tools/toy:/tmp/claude-1000/-mnt-d-D
+ev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project
+/swarmforge/scripts:/home/oscar/.local/bin:/home/oscar/bin:/usr/local/sbin:/usr/
+local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl
+/lib:/mnt/c/Users/oscar/AppData/Roaming/Code/User/globalStorage/github.copilot-c
+hat/debugCommand:/mnt/c/Users/oscar/AppData/Roaming/Code/User/globalStorage/gith
+ub.copilot-chat/copilotCli:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows
+
+  Read 1 file, ran 2 shell commands
+
+● The coder's fix is already on main (single checkout). Let me verify the test
+  and run the quality gates on the changed file.
+
+  Ran 1 shell command
+
+● Test passes; both gates are green (CRAP 0/6, DRY 0/0) and logged to the
+  evidence file. The changed code (sut.sh) is a two-line script — nothing to
+  deduplicate, no complexity, no architectural boundary to correct, and no
+  coverage tool applies to a bare echo. No cleanup change is warranted
+  (introducing churn would violate the DRY/anti-churn rules). Let me confirm the
+  handoff helper's draft format before completing the batch and handing back.
+
+● Reading 1 file, running 1 shell command…
+  ⎿  swarmforge/scripts/swarm_handoff.bb
+
+✽ Bloviating… (5m 38s · ↓ 12.0k tokens · thinking)
+
+────────────────────────────────────────────────────────── SwarmForge cleaner ──
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt · ← for agents
