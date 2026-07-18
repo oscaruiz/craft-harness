@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# smoke-tmux (m3, behavior 1) — certify the interactive window mode that
+# milestone 2 documented (adapters/CONTRACT.md "Mode 2") but did not run.
+#
+# Upstream swarm-forge drives agents through a private tmux socket: it starts
+# one window per role with `tmux -S <sock> new-session -d` running the user's
+# default shell, then wakes an idle agent with `tmux send-keys ... Enter`
+# (swarmforge/scripts/swarmforge.bb). Its zsh helpers (every
+# swarmforge/scripts/*.sh is `#!/usr/bin/env zsh`) run as subprocesses via their
+# shebang, independent of the window shell. This smoke exercises exactly those
+# primitives on a throwaway session and asserts, on real evidence, three things
+# WSL can break independently:
+#
+#   1. tmux starts a detached session on a private socket (default shell);
+#   2. a keystroke wake-up (`send-keys`) is actually received by the window;
+#   3. an upstream zsh helper runs correctly as a subprocess — proven by calling
+#      normalize_terminal_backend from swarm-terminal-adapter.sh, which uses the
+#      zsh-only `${1:l}` expansion (bash would produce the wrong answer).
+#
+# Faithful to upstream's mode: the window runs the default shell (bash on the
+# reference WSL box, D4), and the zsh helper is invoked as a `zsh -f`
+# subprocess — the same way upstream's shebang'd helpers run. Self-asserting:
+# exits non-zero and dumps the pane on any failure. Writes evidence to
+# docs/evidence/m3/smoke-tmux.txt (or $1).
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+adapter="$repo_root/swarmforge/scripts/swarm-terminal-adapter.sh"
+out="${1:-$repo_root/docs/evidence/m3/smoke-tmux.txt}"
+
+for dep in tmux zsh; do
+  command -v "$dep" >/dev/null 2>&1 || { echo "smoke-tmux: '$dep' is required but not installed" >&2; exit 1; }
+done
+[ -f "$adapter" ] || { echo "smoke-tmux: upstream helper not found: $adapter" >&2; exit 1; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-tmux.XXXXXX")"
+sock="$work/tmux.sock"
+sess="smoke-$$"
+ready_file="$work/ready"
+sentinel="$work/sentinel"
+pane="$work/pane.txt"
+status="FAIL"
+
+cleanup() {
+  tmux -S "$sock" kill-server >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+# poll_for <file> <needle> <max-tenths>: succeed once <file> contains <needle>.
+poll_for() {
+  local file="$1" needle="$2" max="$3" i=0
+  while [ "$i" -lt "$max" ]; do
+    if [ -s "$file" ] && grep -q "$needle" "$file" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# 1. detached session on a private socket, window running the default shell.
+tmux -S "$sock" new-session -d -s "$sess" -n smoke
+tmux -S "$sock" has-session -t "$sess" 2>/dev/null || {
+  echo "smoke-tmux: new-session did not create '$sess'" >&2; exit 1; }
+
+# 2. keystroke wake-up: resend an idempotent ping until the window acts on it
+#    (covers the race where the shell is not yet reading the pty). Receipt of the
+#    keystroke IS the wake-up assertion.
+keystroke_received=false
+i=0
+while [ "$i" -lt 50 ]; do
+  tmux -S "$sock" send-keys -t "$sess:smoke" "echo WOKE > '$ready_file'" Enter
+  sleep 0.2
+  if [ -s "$ready_file" ] && grep -q WOKE "$ready_file" 2>/dev/null; then
+    keystroke_received=true
+    break
+  fi
+  i=$((i + 1))
+done
+
+# 3. run a real upstream zsh helper as a subprocess via a keystroke; ${1:l} is
+#    zsh-only, so a correct "iterm2" proves the helper executed under zsh. `-f`
+#    skips rc files / zsh-newuser-install for a deterministic run.
+helper_ran=false
+helper_result=""
+if [ "$keystroke_received" = true ]; then
+  tmux -S "$sock" send-keys -t "$sess:smoke" \
+    "zsh -f -c \"source '$adapter'; normalize_terminal_backend ITERM2\" > '$sentinel' 2>&1; echo DONE >> '$sentinel'" Enter
+  if poll_for "$sentinel" DONE 50; then
+    helper_result="$(head -1 "$sentinel")"
+    [ "$helper_result" = "iterm2" ] && helper_ran=true
+  fi
+fi
+
+tmux -S "$sock" capture-pane -t "$sess:smoke" -p > "$pane" 2>/dev/null || true
+
+if [ "$keystroke_received" = true ] && [ "$helper_ran" = true ]; then
+  status="PASS"
+fi
+
+mkdir -p "$(dirname "$out")"
+{
+  echo "smoke-tmux — interactive window mode certification (m3, behavior 1)"
+  echo "date:        $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  echo "host:        $(uname -srm)"
+  echo "tmux:        $(tmux -V)"
+  echo "zsh:         $(zsh --version)"
+  echo "login shell: ${SHELL:-unknown} (window runs default shell; zsh helper as subprocess)"
+  echo "socket:      $sock"
+  echo "helper:      swarmforge/scripts/swarm-terminal-adapter.sh"
+  echo
+  echo "checks:"
+  echo "  [$( [ "$keystroke_received" = true ] && echo x || echo ' ' )] tmux detached session on a private socket"
+  echo "  [$( [ "$keystroke_received" = true ] && echo x || echo ' ' )] send-keys wake-up received by the window"
+  echo "  [$( [ "$helper_ran" = true ] && echo x || echo ' ' )] upstream zsh helper ran (normalize_terminal_backend ITERM2 -> '$helper_result', expected 'iterm2')"
+  echo
+  echo "captured pane:"
+  sed 's/^/  | /' "$pane" 2>/dev/null || true
+  echo
+  echo "RESULT: $status"
+} | tee "$out"
+
+[ "$status" = "PASS" ]

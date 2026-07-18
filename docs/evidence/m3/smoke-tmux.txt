@@ -1,0 +1,41 @@
+smoke-tmux — interactive window mode certification (m3, behavior 1)
+date:        2026-07-18T15:53:46Z
+host:        Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+tmux:        tmux 3.2a
+zsh:         zsh 5.8.1 (x86_64-ubuntu-linux-gnu)
+login shell: /bin/bash (window runs default shell; zsh helper as subprocess)
+socket:      /tmp/smoke-tmux.FiU6PE/tmux.sock
+helper:      swarmforge/scripts/swarm-terminal-adapter.sh
+
+checks:
+  [x] tmux detached session on a private socket
+  [x] send-keys wake-up received by the window
+  [x] upstream zsh helper ran (normalize_terminal_backend ITERM2 -> 'iterm2', expected 'iterm2')
+
+captured pane:
+  | echo WOKE > '/tmp/smoke-tmux.FiU6PE/ready'
+  | oscar@DELL:/mnt/d/Dev/craft-harness$ echo WOKE > '/tmp/smoke-tmux.FiU6PE/ready'
+  | oscar@DELL:/mnt/d/Dev/craft-harness$ zsh -f -c "source '/mnt/d/Dev/craft-harness
+  | /swarmforge/scripts/swarm-terminal-adapter.sh'; normalize_terminal_backend ITERM
+  | 2" > '/tmp/smoke-tmux.FiU6PE/sentinel' 2>&1; echo DONE >> '/tmp/smoke-tmux.FiU6P
+  | E/sentinel'
+  | oscar@DELL:/mnt/d/Dev/craft-harness$
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+  | 
+
+RESULT: PASS
