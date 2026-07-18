@@ -289,6 +289,42 @@ directly). seed_prompts is now idempotent on resume so a re-run picks up the
 fixed prompts. Like m3's B6, reaching a green real run took iterating on
 real-agent frictions the fakes could not expose — none of them pipeline bugs.
 
+## D16 — solo-pack is a real pack branch; run-solo reads phase content from it, not from baked-in strings (2026-07-18, m4)
+
+Reality check before the first real-project solo run: there was no `solo-pack`
+pack branch — only the milestone dev branch `m4-solo-pack`. `two-pack-lite` is a
+proper pack branch (upstream base + one commit carrying our `cleaner.prompt` and
+`swarmforge.conf`), but `run-solo` baked its three phase prompts into
+`seed_prompts()` and read no branch at all: `pack=solo-pack` was a manifest
+label, nothing more. So the two light paths were structurally asymmetric, and a
+`solo-pack` branch shaped like `two-pack-lite` would have sat inert.
+
+Design §4 says the launcher "materializes conf/roles for the pack." In reality it
+cannot materialize *roles* generically: `MANAGED_FILES.manifest` is a single
+global list, but role files are per-pack (two-pack has `coder`/`cleaner`, solo
+has `specify`/`code`/`verify`), so a global manifest entry `swarmforge/roles/*`
+would resolve against the wrong pack. That is why roles/conf are deliberately
+absent from the manifest.
+
+Ruling (mirrors how the launcher resolves `--pack` against the fork): create a
+real `solo-pack` branch — base `upstream/two-pack` like `two-pack-lite`, one
+commit swapping the two-pack roles/conf for `swarmforge/roles/{specify,code,
+verify}.prompt` + a solo `swarmforge.conf` (`phase <name> <agent> <role>` lines).
+`run-solo` gains `--pack <branch>` (default `solo-pack`) and loads each phase's
+prompt **body** from `git show <pack>:swarmforge/roles/<phase>.prompt`, and
+validates the conf's ordered phase list against its own sequence — failing loudly
+if the branch drifts.
+
+The split is deliberate and honours the hard rule (critical controls are
+executable, never prompt text alone): the branch owns phase **content** (what
+each phase should do); `run-solo` still owns phase **structure and controls** —
+the R6 gate, the verify worktree at the candidate commit, commit-on-enforced-
+branch, the handoff routing header (D14), the env-var wrapper paths (D15), and
+the shared handoff-section instructions appended to every phase prompt. The
+extracted bodies are byte-identical to the former baked strings, so the seeded
+prompts (and the whole existing suite) are unchanged; new tests assert the
+prompts now originate from the branch and that a missing pack/role fails cleanly.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
