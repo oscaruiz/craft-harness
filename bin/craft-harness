@@ -168,7 +168,19 @@ run_cmd() {
 }
 
 upgrade_cmd() {
-  die "upgrade: not implemented yet"
+  [[ -n "$PROJECT" ]] || die "upgrade requires --project <path>"
+  local state="$PROJECT/.craft-harness"
+  [[ -L "$state/current" ]] || die "project not initialized (no .craft-harness/current) — use 'craft-harness run'"
+  refuse_if_in_flight "$PROJECT" "upgrade"
+  local pack commit
+  pack="$(cat "$state/pack")"
+  commit="$(git -C "$FORK_ROOT" rev-parse --verify --quiet "$pack^{commit}")" \
+    || die "recorded pack branch no longer exists in the fork: $pack"
+  install_tree "$PROJECT" "$commit"
+  ensure_links "$PROJECT"
+  install_hook "$PROJECT"
+  prune_stores "$PROJECT"
+  echo "craft-harness: upgraded $PROJECT to $commit (pack '$pack')"
 }
 
 # Exit codes are part of the contract (run/upgrade compose over them):
