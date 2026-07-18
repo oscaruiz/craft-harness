@@ -109,8 +109,11 @@ now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 launch_string() { # <role>: faithful claude Mode-2 launch + tools/toy on PATH
   local role="$1"
   local prompt="$PROJECT/swarmforge/roles/$role.prompt"
-  printf "export SWARMFORGE_ROLE=%q && export PATH=%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
-    "$role" "$FORK_ROOT/tools/toy" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$prompt" "SwarmForge $role" "$prompt"
+  # PATH order: our toy wrappers (crap.sh/dry.sh), then the pack's upstream
+  # helpers (swarm_handoff.sh/ready_for_next.sh — how a real agent hands off and
+  # consumes), then run-pack's own PATH (the intended claude), then inherited.
+  printf "export SWARMFORGE_ROLE=%q && export PATH=%q:%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
+    "$role" "$FORK_ROOT/tools/toy" "$PROJECT/swarmforge/scripts" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$prompt" "SwarmForge $role" "$prompt"
 }
 
 capture_panes() {
@@ -137,7 +140,12 @@ wait_for_outbox() { # <timeout-s> -> prints the oldest handoff path, or nothing
   done
 }
 
-record_consumption() { # move inbox/new -> inbox/in_process, stamp dequeued_at
+drain_inbox() { # record consumption for any handoff the agent did not itself
+  # consume. A real agent runs ready_for_next.sh (moving inbox/new ->
+  # in_process and stamping dequeued_at), so this is a no-op for it; the test
+  # fake never touches the queue, so run-pack drains it here — the daemon
+  # stand-in (decisions.md D7 + D11). Called once the pipeline has settled, so
+  # a real agent is never raced out of its own inbox.
   local f base
   for f in "$HB/inbox/new"/*.handoff; do
     base="$(basename "$f")"
@@ -198,9 +206,12 @@ while :; do
   if [[ -n "$to" ]]; then
     tmux -S "$SOCKET" send-keys -t "$SESS:$to" "$WAKE_MSG" Enter || true
   fi
-  record_consumption
   processed=$(( processed + 1 ))
 done
+
+# Settle the durable queue: a real agent already consumed via ready_for_next;
+# drain whatever a non-consuming agent (the test fake) left behind.
+drain_inbox
 
 duration=$(( $(now_s) - start ))
 capture_panes
