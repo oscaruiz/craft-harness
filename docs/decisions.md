@@ -105,6 +105,33 @@ Consequences:
   genericity claim is **OPEN until D8 clears** (the Codex run lands). Claude
   Code as the primary/verified backend is unaffected.
 
+## D9 — Faithful tmux mode is default shell in the window + zsh helpers as shebang subprocesses (2026-07-18, m3)
+
+Certifying the interactive window mode (B1, `bin/smoke-tmux`) surfaced a real
+trap: launching **interactive** zsh inside a fresh tmux pane triggers
+`zsh-newuser-install` (the reference WSL box has no `~/.zshrc`), whose menu
+**eats the first keystrokes** — the wake-up `send-keys` is silently lost. That
+is not how upstream drives agents: `swarmforge/scripts/swarmforge.bb` runs the
+**default shell** in the window (`new-session -d` with no command) and its zsh
+helpers execute as **subprocesses via their `#!/usr/bin/env zsh` shebang**,
+independent of the window shell. The smoke was written to match that path
+exactly (default shell + a `zsh -f` helper subprocess), which is both faithful
+and quirk-free.
+
+Consequence for B5/B6: the `run-pack` window setup MUST follow this — default
+shell in the window, never interactive zsh — or reproduce upstream's own
+launch string. Do not `send-keys` into a freshly-spawned interactive zsh pane.
+
+## D10 — Git author identity is `oscaruiz`, kept repo-locally (2026-07-18, m3)
+
+Git identity was unset in the WSL environment; the m1/m2 history is authored by
+`oscaruiz <[email-redacted]>` (the repo owner). The session context lists a
+different address (`[email-redacted]`), but the committed history is the
+source of truth. Owner ruling: keep `oscaruiz` set **repo-locally**
+(`git config user.name/user.email`, not global), amend nothing. Recorded here
+so the author/session-email mismatch is not mistaken later for a leak or a
+misconfiguration.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
