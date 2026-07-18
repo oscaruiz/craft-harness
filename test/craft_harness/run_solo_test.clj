@@ -142,6 +142,24 @@
     (testing "the session is no longer in flight"
       (is (= "done" (status p))))))
 
+;; --- end-to-end: a completed solo run inspects green -------------------------
+
+(deftest completed-run-inspects-green
+  (testing "the session run-solo produces is accepted by the solo inspector"
+    (let [p (make-project!)
+          r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          _ (run-solo! p "happy")
+          inspect (str (fs/path repo-root "bin" "inspect-run"))
+          r (sh/sh "bash" inspect (str (state p)) (str p)
+                   :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
+                         "GIT_CONFIG_NOSYSTEM" "1"})
+          out (str (:out r) (:err r))]
+      (is (zero? (:exit r)) (str "the solo inspector must be green on a real run-solo session:\n" out))
+      (is (str/includes? out "RESULT: PASS"))
+      (testing "the wrappers ran at threshold 6, durably captured"
+        (is (str/includes? (slurp (str (fs/path (state p) "logs" "wrappers.log"))) "crap: threshold=6"))))))
+
 ;; --- a phase's invalid handoff stops the run with attribution ----------------
 
 (deftest invalid-handoff-stops-the-run-naming-phase-and-field

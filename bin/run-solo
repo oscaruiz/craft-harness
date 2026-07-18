@@ -133,6 +133,7 @@ run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
   if [[ "$PHASE_TIMEOUT" -gt 0 ]]; then
     runner=(bash "$FORK_ROOT/adapters/run-with-timeout" "$PHASE_TIMEOUT" -- "${runner[@]}")
   fi
+  PATH="$FORK_ROOT/tools/toy:$PATH" \
   SOLO_HANDOFF="$HANDOFFS/$name.handoff" \
   SOLO_SPEC_DIR="$SPEC" \
   SOLO_PHASE="$name" \
