@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# craft-harness launcher — run | upgrade | doctor (design v2.2 §4, milestone 1).
+#
+# Install layout inside a project:
+#   .craft-harness/store/<commit>.<pid>/   immutable materialized tree + VERSION
+#   .craft-harness/current                 symlink to store/<...>, swapped atomically
+#   .craft-harness/pack, .craft-harness/branch
+#   <manifest entry>                       stable symlink through .craft-harness/current/
+#   .craft-harness-version                 stable symlink to .craft-harness/current/VERSION
+#   .git/hooks/pre-commit                  executable copy (survives `git clean`)
+#
+# Upgrades build a full new store and swap the single `current` symlink with
+# one atomic rename: an interruption at any point leaves the old install
+# fully intact (exit criterion "no hybrid state").
+set -euo pipefail
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST="$FORK_ROOT/MANAGED_FILES.manifest"
+
+die() { echo "craft-harness: $*" >&2; exit 1; }
+
+# Deterministic fault injection for the kill-mid-way tests (decisions.md D3).
+test_die_at() {
+  if [[ "${CRAFT_HARNESS_TEST_DIE_AT:-}" == "$1" ]]; then
+    kill -9 $$
+  fi
+}
+
+manifest_entries() {
+  [[ -f "$MANIFEST" ]] || die "MANAGED_FILES.manifest not found at $FORK_ROOT"
+  local line
+  while read -r line; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    case "$line" in
+      /*|*..*) die "invalid manifest entry (absolute or escaping path): $line" ;;
+    esac
+    printf '%s\n' "$line"
+  done < "$MANIFEST"
+}
+
+# --- install machinery ----------------------------------------------------
+
+install_tree() { # <project> <commit>: build a store and atomically repoint current
+  local project="$1" commit="$2"
+  local state="$project/.craft-harness"
+  local name="$commit.$$"
+  local staging="$state/store/$name"
+  local e
+  local entries
+  entries="$(manifest_entries)"   # command substitution: a die here propagates
+  command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  rm -f "$state"/.current.tmp.* 2>/dev/null || true
+  while read -r e; do
+    mkdir -p "$staging/$(dirname "$e")"
+    if ! git -C "$FORK_ROOT" show "$commit:$e" > "$staging/$e" 2>/dev/null; then
+      rm -rf "$staging"
+      die "manifest entry '$e' does not exist in commit $commit"
+    fi
+  done <<< "$entries"
+  printf '%s\n' "$commit" > "$staging/VERSION"
+  [[ -f "$staging/hooks/pre-commit" ]] && chmod +x "$staging/hooks/pre-commit"
+  test_die_at post-staging
+  while read -r e; do
+    if [[ ! -s "$staging/$e" ]]; then
+      rm -rf "$staging"
+      die "validation failed: staged file empty or missing: $e"
+    fi
+  done <<< "$entries"
+  test_die_at pre-swap
+  ln -s "store/$name" "$state/.current.tmp.$$"
+  test_die_at mid-swap
+  bb "$FORK_ROOT/bin/atomic_rename.bb" "$state/.current.tmp.$$" "$state/current"
+}
+
+rel_prefix() { # ../ for each path component above the entry
+  local slashes="${1//[^\/]/}" prefix="" i
+  for ((i = 0; i < ${#slashes}; i++)); do prefix+="../"; done
+  printf '%s' "$prefix"
+}
+
+ensure_links() { # stable entry symlinks through .craft-harness/current/
+  local project="$1"
+  local e link entries
+  entries="$(manifest_entries)"
+  while read -r e; do
+    link="$project/$e"
+    [[ -L "$link" ]] && continue
+    [[ -e "$link" ]] && die "refusing to overwrite existing file: $e"
+    mkdir -p "$(dirname "$link")"
+    ln -s "$(rel_prefix "$e").craft-harness/current/$e" "$link"
+  done <<< "$entries"
+  if [[ ! -L "$project/.craft-harness-version" ]]; then
+    [[ -e "$project/.craft-harness-version" ]] \
+      && die "refusing to overwrite existing .craft-harness-version"
+    ln -s ".craft-harness/current/VERSION" "$project/.craft-harness-version"
+  fi
+}
+
+install_hook() { # executable copy: must survive `git clean` in the project
+  local project="$1"
+  local src="$project/.craft-harness/current/hooks/pre-commit"
+  [[ -f "$src" ]] || return 0
+  cp "$src" "$project/.git/hooks/pre-commit"
+  chmod +x "$project/.git/hooks/pre-commit"
+}
+
+prune_stores() { # drop stores no longer referenced by current
+  local state="$1/.craft-harness"
+  local live d
+  live="$(readlink "$state/current")"
+  live="${live#store/}"
+  for d in "$state/store"/*; do
+    [[ -d "$d" ]] || continue
+    [[ "$(basename "$d")" == "$live" ]] && continue
+    rm -rf "$d"
+  done
+}
+
+# --- subcommands ----------------------------------------------------------
+
+run_cmd() {
+  [[ -n "$PROJECT" && -n "$PACK" ]] || die "run requires --project <path> and --pack <branch>"
+  [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+  [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: the launcher refuses to start without an approved task.md"
+  local commit
+  commit="$(git -C "$FORK_ROOT" rev-parse --verify --quiet "$PACK^{commit}")" \
+    || die "unknown pack branch: $PACK"
+  install_tree "$PROJECT" "$commit"
+  printf '%s\n' "$PACK" > "$PROJECT/.craft-harness/pack"
+  git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$PROJECT/.craft-harness/branch"
+  ensure_links "$PROJECT"
+  install_hook "$PROJECT"
+  prune_stores "$PROJECT"
+  echo "craft-harness: installed $commit (pack '$PACK') into $PROJECT"
+}
+
+upgrade_cmd() {
+  die "upgrade: not implemented yet"
+}
+
+doctor_cmd() {
+  die "doctor: not implemented yet"
+}
+
+# --- dispatch -------------------------------------------------------------
+
+usage() {
+  cat >&2 <<'EOF'
+usage: craft-harness <run|upgrade|doctor> --project <path> [--pack <branch>]
+EOF
+  exit 2
+}
+
+CMD="${1:-}"
+case "$CMD" in
+  run|upgrade|doctor) shift ;;
+  *) usage ;;
+esac
+
+PROJECT=""
+PACK=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    --pack) PACK="${2:-}"; shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$CMD" in
+  run) run_cmd ;;
+  upgrade) upgrade_cmd ;;
+  doctor) doctor_cmd ;;
+esac
