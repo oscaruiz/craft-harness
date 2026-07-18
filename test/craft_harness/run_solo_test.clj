@@ -53,13 +53,16 @@
     (git! dir "add" "-A") (git! dir "commit" "-q" "-m" "toy baseline")
     dir))
 
+(def ^:dynamic *extra-env* {})
+
 (defn run-solo! [project variant & extra]
   (let [r (apply sh/sh "bash" run-solo
                  "--project" (str project)
                  "--adapter" (str (fs/path fixtures variant))
                  (concat extra
-                         [:env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
-                                "GIT_CONFIG_NOSYSTEM" "1"}]))]
+                         [:env (merge {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
+                                       "GIT_CONFIG_NOSYSTEM" "1"}
+                                      *extra-env*)]))]
     (assoc r :all (str (:out r) (:err r)))))
 
 (defn state [project] (fs/path project ".craft-harness" "solo" "current"))
@@ -162,6 +165,74 @@
                          "GIT_CONFIG_NOSYSTEM" "1"})]
       (is (not (zero? (:exit r))) "doctor must not report healthy while a solo session is in flight")
       (is (re-find #"(?i)in.?flight|solo" (str (:out r) (:err r)))))))
+
+;; --- B3: verifier isolation --------------------------------------------------
+
+(defn drive-to-verify!
+  "Run specify, approve, then continue — returns the second invocation's result."
+  [p variant]
+  (let [r1 (run-solo! p variant)]
+    (approve! p (approval-token r1))
+    (run-solo! p variant)))
+
+(deftest verifier-at-the-wrong-commit-turns-the-run-red
+  (testing "a worktree planted at baseline (not the candidate) must fail the run"
+    (let [p (make-project!)
+          r2 (binding [*extra-env* {"CRAFT_SOLO_TEST_VERIFY_AT_BASELINE" "1"}]
+               (drive-to-verify! p "happy"))]
+      (is (not (zero? (:exit r2)))
+          "verify against the baseline (sut still broken) must turn the run red")
+      (is (re-find #"(?i)verify" (:all r2)) "the failure must be attributed to verify")
+      (is (not= "done" (status p))))))
+
+(deftest verify-workdir-is-clean-of-prior-phase-scratch
+  (testing "the verifier's checkout carries no transcript or scratch from earlier phases"
+    (let [p (make-project!)
+          _ (drive-to-verify! p "happy")
+          listing (slurp (str (fs/path (state p) "verify-listing.txt")))]
+      (testing "it sees the candidate's tracked files"
+        (is (re-find #"(?m)^sut\.sh$" listing))
+        (is (re-find #"(?m)^test\.sh$" listing))
+        (is (re-find #"(?m)^task\.md$" listing)))
+      (testing "no listed entry is solo state, the spec, handoffs, or a phase log"
+        ;; check ENTRY lines (ls -a1 output), not the cwd= path which naturally
+        ;; contains .craft-harness because the worktree lives under it.
+        (is (not (re-find #"(?m)^\.craft-harness$" listing))
+            "the solo session dir must not appear as an entry in the verify workdir")
+        (is (not (re-find #"(?m)^spec\.md$" listing)))
+        (is (not (re-find #"(?m)^handoffs$" listing)))
+        (is (not (re-find #"(?m)^specify\.log$" listing))))
+      (testing "the verify workdir is a separate path from the project"
+        (is (re-find #"cwd=.*verify-workdir" listing))))))
+
+;; --- B4: breakers (R10) ------------------------------------------------------
+
+(defn run-solo-timed! [project variant & extra]
+  (let [start (System/currentTimeMillis)
+        r (apply run-solo! project variant extra)]
+    (assoc r :elapsed-ms (- (System/currentTimeMillis) start))))
+
+(deftest stuck-phase-is-killed-by-the-per-phase-timeout-with-attribution
+  (testing "a hanging phase is killed and the failure is attributed"
+    (let [p (make-project!)
+          r (run-solo-timed! p "stuck" "--phase-timeout" "1" "--retry-cap" "1")]
+      (is (not (zero? (:exit r))))
+      (is (< (:elapsed-ms r) 60000)
+          (str "the breaker must return within a bound, took " (:elapsed-ms r) "ms"))
+      (is (re-find #"(?i)specify" (:all r)) "attributed to the phase that hung")
+      (is (re-find #"(?i)timeout" (:all r)) "named as a timeout")
+      (is (not= "done" (status p))))))
+
+(deftest retry-cap-trips-and-stops-the-run
+  (testing "a phase that keeps failing is retried up to the cap, then the run stops"
+    (let [p (make-project!)
+          r (run-solo-timed! p "stuck" "--phase-timeout" "1" "--retry-cap" "3")]
+      (is (not (zero? (:exit r))))
+      (is (< (:elapsed-ms r) 60000)
+          (str "retries must stay bounded, took " (:elapsed-ms r) "ms"))
+      (is (re-find #"(?i)retry cap" (:all r)) "the failure must name the retry cap")
+      (testing "it actually retried (attempts logged up to the cap)"
+        (is (re-find #"attempt 3/3" (:all r)))))))
 
 ;; --- interface hygiene -------------------------------------------------------
 

@@ -78,6 +78,12 @@ MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 set_status() { printf '%s\n' "$1" > "$STATUS"; }
 
+# A failed/broken verify phase must not leak its worktree (R10 reliable
+# cancellation). fail_phase exits, firing this trap.
+VWD=""
+cleanup_worktree() { [[ -n "$VWD" ]] && git -C "$PROJECT" worktree remove --force "$VWD" 2>/dev/null || true; }
+trap cleanup_worktree EXIT
+
 ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
 
 write_manifest() { # <outcome>
@@ -112,6 +118,14 @@ seed_prompts() {
   write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and have no prior transcript. Inputs: the approved spec in \$SOLO_SPEC_DIR, the diff in \$SOLO_DIFF, and the prior handoffs in \$SOLO_HANDOFFS_DIR. Run ./test.sh and check each scenario ID from the spec is satisfied. Do NOT modify code or commit. Write your verdict and structured handoff (referencing the scenario IDs you checked) to \$SOLO_HANDOFF per docs/solo-handoff-schema.md."
 }
 
+RUN_START="$(date +%s)"
+check_run_deadline() { # <phase>: whole-run breaker (R10)
+  [[ "$RUN_TIMEOUT" -gt 0 ]] || return 0
+  if (( $(date +%s) - RUN_START >= RUN_TIMEOUT )); then
+    fail_phase "$1" "whole-run timeout (${RUN_TIMEOUT}s) exceeded before phase could finish"
+  fi
+}
+
 run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
   local name="$1" wd="$2" rc=0
   set_status "running_$name"
@@ -128,6 +142,23 @@ run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
   CRAFT_WRAPPER_LOG="$LOGS/wrappers.log" \
     "${runner[@]}" > "$LOGS/$name.log" 2>&1 || rc=$?
   return $rc
+}
+
+# Per-phase breaker + retry cap (R10): run the phase, retrying a failed invoke
+# up to --retry-cap times; exhausting the cap stops the run with attribution.
+run_phase_with_retries() { # <name> <workdir>
+  local name="$1" wd="$2" attempt=1 rc=0 last=""
+  check_run_deadline "$name"
+  while (( attempt <= RETRY_CAP )); do
+    rc=0
+    run_phase "$name" "$wd" || rc=$?
+    if (( rc == 0 )); then return 0; fi
+    if (( rc == 124 )); then last="per-phase timeout (${PHASE_TIMEOUT}s)"; else last="invoke failed (rc=$rc)"; fi
+    echo "run-solo: phase '$name' attempt $attempt/$RETRY_CAP failed — $last" >&2
+    attempt=$(( attempt + 1 ))
+    check_run_deadline "$name"
+  done
+  fail_phase "$name" "exhausted retry cap ($RETRY_CAP); last failure: $last"
 }
 
 # validate a phase handoff; on failure, attribute and stop the run.
@@ -150,7 +181,7 @@ start_fresh() {
   seed_prompts
 
   local start; start="$(date +%s)"
-  run_phase specify "$PROJECT" || fail_phase specify "invoke failed (rc, see logs/specify.log)"
+  run_phase_with_retries specify "$PROJECT"
   validate_phase_handoff specify
   record_phase specify "$(( $(date +%s) - start ))" ok
 
@@ -184,7 +215,7 @@ run_code_and_verify() {
 
   # code phase — in the project, on the enforced branch.
   start="$(date +%s)"
-  run_phase code "$PROJECT" || fail_phase code "invoke failed (see logs/code.log)"
+  run_phase_with_retries code "$PROJECT"
   validate_phase_handoff code --changed
   git -C "$PROJECT" rev-parse HEAD > "$STATE/candidate_commit"
   record_phase code "$(( $(date +%s) - start ))" ok
@@ -199,14 +230,22 @@ run_code_and_verify() {
   local vwd="$STATE/verify-workdir"
   rm -rf "$vwd"
   git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
-  git -C "$PROJECT" worktree add --detach "$vwd" "$candidate" >/dev/null 2>&1 \
-    || fail_phase verify "could not create verify worktree at candidate $candidate"
+  # The verifier MUST run against the candidate commit (R4 independent judgment).
+  # CRAFT_SOLO_TEST_VERIFY_AT_BASELINE is a sanctioned test hook (D3-style) that
+  # plants the mismatch — checking out the baseline instead — so the suite can
+  # prove a wrong-commit worktree turns the run red. Never set in production.
+  local verify_at="$candidate"
+  [[ "${CRAFT_SOLO_TEST_VERIFY_AT_BASELINE:-}" == "1" ]] && verify_at="$baseline"
+  VWD="$vwd"   # tracked so the EXIT trap tears it down even if a breaker fires
+  git -C "$PROJECT" worktree add --detach "$vwd" "$verify_at" >/dev/null 2>&1 \
+    || fail_phase verify "could not create verify worktree at $verify_at"
 
   start="$(date +%s)"
-  run_phase verify "$vwd" || { git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true; fail_phase verify "invoke failed (see logs/verify.log)"; }
+  run_phase_with_retries verify "$vwd"
   validate_phase_handoff verify
   record_phase verify "$(( $(date +%s) - start ))" ok
   git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
+  VWD=""
 
   set_status "done"
   write_manifest "success"

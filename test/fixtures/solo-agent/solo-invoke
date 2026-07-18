@@ -72,8 +72,14 @@ FEAT
     emit_handoff code verify "commit: $commit" "- implemented SUT-1 by making sut.sh echo 42"
     ;;
   verify)
+    # Isolation evidence (B3): record exactly what this clean checkout can see,
+    # to a file that survives the worktree teardown.
+    { echo "cwd=$(pwd)"; ls -a1; } \
+      > "$SOLO_PROJECT/.craft-harness/solo/current/verify-listing.txt" 2>/dev/null || true
     if ./test.sh >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
     emit_handoff verify done "" "- SUT-1: $verdict — ran ./test.sh against the candidate"
+    # The verifier's verdict is a real gate: a failing check turns the run red.
+    [[ "$verdict" == pass ]] || exit 1
     ;;
   *)
     echo "fake solo-agent: unknown phase '$PHASE'" >&2; exit 1 ;;
