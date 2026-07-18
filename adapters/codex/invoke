@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# craft-harness adapter: Codex, headless mode (adapters/CONTRACT.md).
+# One agent turn: `codex exec` on the prompt, workdir via -C, confinement
+# via the workspace-write sandbox (decisions.md D2).
+set -euo pipefail
+
+usage() { echo "usage: invoke --workdir <dir> --prompt-file <file>" >&2; exit 2; }
+
+WORKDIR=""
+PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || usage
+
+exec codex exec -C "$WORKDIR" --sandbox workspace-write "$(cat "$PROMPT")"

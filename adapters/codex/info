@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# "<cli-name> <version>" for the run manifest (R10, adapters/CONTRACT.md).
+set -euo pipefail
+printf 'codex %s\n' "$(codex --version)"

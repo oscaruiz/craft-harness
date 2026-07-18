@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# craft-harness adapter: Claude Code, headless mode (adapters/CONTRACT.md).
+# One agent turn: `claude -p` on the prompt, cwd = workdir, confinement via
+# the CLI's permission configuration (decisions.md D2).
+set -euo pipefail
+
+usage() { echo "usage: invoke --workdir <dir> --prompt-file <file>" >&2; exit 2; }
+
+WORKDIR=""
+PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || usage
+
+cd "$WORKDIR"
+exec claude -p --permission-mode acceptEdits "$(cat "$PROMPT")"
