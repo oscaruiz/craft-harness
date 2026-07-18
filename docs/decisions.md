@@ -63,6 +63,19 @@ solo-pack's sequential runner (m4) will define its own session state and
 extend doctor's probes then — m1 deliberately freezes only the upstream
 probes, so no m3–4 contract is constrained by an m1 test.
 
+## D7 — Wake-up in the adapter contract is a fresh `invoke` carrying the wake message (2026-07-18, m2)
+
+Upstream wake-ups are deliberately lossy tmux keystrokes ("You have new
+handoff mail. If idle, run ready_for_next.sh." — `handoffd.bb`); the durable
+truth is the file inbox. The headless adapter contract reproduces exactly
+that semantics without a terminal: the scenario runner delivers the handoff
+to the recipient's `inbox/new/` (playing the daemon's role) and issues a
+fresh `invoke` whose prompt is the wake message; the agent proves consumption
+through the durable queue (`ready_for_next` semantics), never through the
+transcript. Owner ruling at the m2 kickoff. This same primitive — fresh
+process, no inherited transcript, durable state as the only carrier — is the
+solo-pack's phase mechanism (m4).
+
 ## D4 — Reference platform for the suite and the demo is WSL (2026-07-18, m1)
 
 The dev machine is Windows; supported platforms are macOS/Linux/WSL. The test
