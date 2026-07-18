@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# craft-harness run-with-timeout — milestone 2, behavior B2 (R10 breaker).
+#
+#   run-with-timeout <seconds> -- <command> [args...]
+#
+# Runs the command in its OWN process group (bash job control). If it is
+# still running after <seconds>, the whole group gets SIGTERM, half a second
+# of grace, then SIGKILL: a stuck agent cannot leave orphans behind. Exit
+# codes: the command's own on completion, 124 on timeout (GNU convention),
+# 2 on usage error. No setsid/coreutils-timeout dependency: portable to
+# macOS/Linux/WSL with bash alone.
+set -euo pipefail
+
+usage() {
+  echo "usage: run-with-timeout <seconds> -- <command> [args...]" >&2
+  exit 2
+}
+
+SECS="${1:-}"
+[[ "$SECS" =~ ^[0-9]+$ ]] || usage
+shift
+[[ "${1:-}" == "--" ]] || usage
+shift
+[[ $# -gt 0 ]] || usage
+
+FLAG="$(mktemp)"
+trap 'rm -f "$FLAG"' EXIT
+
+# Job control puts the background job in a fresh process group whose pgid
+# is the job's pid — the handle the watchdog kills.
+set -m
+"$@" &
+CMD_PID=$!
+set +m
+
+(
+  for ((i = 0; i < SECS * 10; i++)); do
+    sleep 0.1
+    kill -0 "$CMD_PID" 2>/dev/null || exit 0
+  done
+  printf 'timeout\n' > "$FLAG"
+  kill -TERM -- "-$CMD_PID" 2>/dev/null || true
+  sleep 0.5
+  kill -KILL -- "-$CMD_PID" 2>/dev/null || true
+) &
+WATCHDOG_PID=$!
+
+RC=0
+wait "$CMD_PID" || RC=$?
+
+if [[ -s "$FLAG" ]]; then
+  # The watchdog fired: let it finish the TERM→KILL sequence so the whole
+  # group is guaranteed dead before we report.
+  wait "$WATCHDOG_PID" 2>/dev/null || true
+  echo "run-with-timeout: command exceeded ${SECS}s and its process group was killed" >&2
+  exit 124
+fi
+
+kill "$WATCHDOG_PID" 2>/dev/null || true
+exit "$RC"

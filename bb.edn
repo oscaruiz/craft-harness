@@ -7,8 +7,10 @@
                 (require 'swarmforge.script-test)
                 (require 'craft-harness.launcher-test)
                 (require 'craft-harness.scenario-asserts-test)
+                (require 'craft-harness.timeout-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'craft-harness.launcher-test
-                                                                    'craft-harness.scenario-asserts-test)]
+                                                                    'craft-harness.scenario-asserts-test
+                                                                    'craft-harness.timeout-test)]
                   (System/exit (+ fail error))))}}}
