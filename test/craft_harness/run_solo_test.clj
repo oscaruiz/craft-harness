@@ -288,6 +288,84 @@
       (is (re-find #"(?i)phase list|sequence" (:all r)) "and the phase-list mismatch")
       (is (= base (head p)) "no phase may run against a mis-shaped pack"))))
 
+;; --- m4.5 / D17 / D19: the owned-path contract on the candidate commit -------
+;; run-solo must scope the candidate commit to project.prompt's `owns:` set:
+;; after the code phase, every path the commit touches must match an owned glob,
+;; else the run FAILS before verify, naming the offending paths. No owns-set =>
+;; no check (existing tests above run without a project.prompt and are unaffected).
+
+(defn write-owns! [project block]
+  (write-file (fs/path project "project.prompt")
+              (str "Project role prompt — prose the agent reads.\n\nowns:\n" block "\n")))
+
+(defn candidate-touched
+  "Paths the candidate commit changed vs the baseline commit `base`."
+  [project base]
+  (->> (:out (git! project "diff" "--name-only" base "HEAD"))
+       str/split-lines (remove str/blank?) set))
+
+(deftest owned-scope-in-bounds-run-completes
+  (testing "when the candidate commit touches only owned paths, the run completes"
+    (let [p (make-project!)
+          _ (write-owns! p "  sut.sh")
+          base (head p)
+          r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")]
+      (is (zero? (:exit r2)) (str "an in-scope run must complete:\n" (:all r2)))
+      (is (= "done" (status p)))
+      (is (= #{"sut.sh"} (candidate-touched p base))
+          "the candidate commit touched only the owned path"))))
+
+(deftest planted-out-of-scope-file-turns-the-run-red
+  (testing "D17: a candidate commit touching a path outside owns fails before verify"
+    (let [p (make-project!)
+          _ (write-owns! p "  sut.sh")
+          base (head p)
+          r1 (run-solo! p "outofscope")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "outofscope")]
+      (is (not (zero? (:exit r2)))
+          "a commit that sweeps an out-of-scope file must turn the run red")
+      (testing "the failure names the offending path and is attributed to code / owned paths"
+        (is (str/includes? (:all r2) "notes.txt") "the offending path must be named")
+        (is (re-find #"(?i)owned|owns|scope" (:all r2))))
+      (testing "the run stopped BEFORE verify (R4: the verifier never judged a contaminated commit)"
+        (is (not (fs/exists? (fs/path (state p) "handoffs" "verify.handoff")))
+            "verify must not have produced a handoff")
+        (is (not= "done" (status p)))))))
+
+(deftest dirty-tree-does-not-contaminate-the-candidate-commit
+  (testing "the exact myCQRS condition: unrelated working-tree dirt present, but a scoped agent commits only owned paths and the run passes"
+    (let [p (make-project!)
+          _ (write-owns! p "  sut.sh")
+          ;; unrelated dirt in the working tree, outside the owned set — the
+          ;; kind a naive `git add -A` would sweep into the candidate (D17/D18).
+          _ (write-file (fs/path p "dirt.txt") "pre-existing junk\n")
+          base (head p)
+          r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")]
+      (is (zero? (:exit r2)) (str "dirt present must not fail a scoped run:\n" (:all r2)))
+      (is (= #{"sut.sh"} (candidate-touched p base))
+          "the candidate commit must carry only the owned path, never the dirt")
+      (testing "the dirt is still just sitting in the working tree, uncommitted"
+        (is (fs/exists? (fs/path p "dirt.txt")))
+        (is (re-find #"(?m)dirt\.txt" (:out (git! p "status" "--porcelain")))
+            "dirt.txt stayed untracked/uncommitted")))))
+
+(deftest a-malformed-owned-path-contract-stops-the-run-early
+  (testing "a malformed owns: block fails fast (fail-closed), before any phase runs"
+    (let [p (make-project!)
+          base (head p)
+          _ (write-owns! p "  ../escape/**")     ; traversal — malformed
+          r (run-solo! p "happy")]
+      (is (not (zero? (:exit r))) "a malformed contract must stop the run")
+      (is (re-find #"(?i)owns|owned|contract|project\.prompt" (:all r)))
+      (is (= base (head p)) "no phase may run against a malformed contract")
+      (is (not (fs/exists? (fs/path (state p) "spec" "spec.md")))
+          "specify must not have run"))))
+
 ;; --- interface hygiene -------------------------------------------------------
 
 (deftest run-solo-usage-is-clear
