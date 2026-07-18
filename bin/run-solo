@@ -78,6 +78,29 @@ MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 set_status() { printf '%s\n' "$1" > "$STATUS"; }
 
+# The handoff header (routing metadata) is RUN-SOLO's to own, not the agent's:
+# the phase writes only the five content sections to $SOLO_HANDOFF, and run-solo
+# prepends the header here. This keeps id/from/to/phase/created_at (and the
+# candidate commit) authoritative and correct regardless of how a real agent
+# formats its body — an agent that adds a title just contributes a harmless
+# extra section.
+finalize_handoff() { # <phase> <to> [commit]
+  local phase="$1" to="$2" commit="${3:-}"
+  local h="$HANDOFFS/$phase.handoff"
+  [[ -f "$h" ]] || fail_phase "$phase" "no handoff body written to $h"
+  local body; body="$(cat "$h")"
+  {
+    echo "id: $(date -u +%Y%m%dT%H%M%S%NZ)_$phase"
+    echo "from: $phase"
+    echo "to: $to"
+    echo "phase: $phase"
+    echo "created_at: $(now_iso)"
+    [[ -n "$commit" ]] && echo "commit: $commit"
+    echo
+    printf '%s\n' "$body"
+  } > "$h"
+}
+
 # A failed/broken verify phase must not leak its worktree (R10 reliable
 # cancellation). fail_phase exits, firing this trap.
 VWD=""
@@ -111,11 +134,26 @@ write_prompt() { # <phase> <body>
   printf 'PHASE: %s\n\n%s\n' "$1" "$2" > "$PROMPTS/$1.prompt"
 }
 
+HANDOFF_INSTRUCTIONS="Write your handoff to the file named by the environment variable \$SOLO_HANDOFF. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+
+# done
+- <what this phase actually accomplished>
+# decisions
+- <choices you made and why — this MUST be non-empty if you changed or committed anything>
+# assumptions
+- <what you took for granted>
+# open items
+- <unresolved items for a later phase, or '- none'>
+# commands executed
+- <the commands you ran>
+
+Every section must be present. Use bullet lines under each heading."
+
 seed_prompts() {
   mkdir -p "$PROMPTS"
-  write_prompt specify "Read task.md at the repository root. Produce a specification (write spec.md) and documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on each scenario, all under the directory named by \$SOLO_SPEC_DIR. Do NOT write production code and do NOT commit. Then write your structured handoff to \$SOLO_HANDOFF following docs/solo-handoff-schema.md (sections: done / decisions / assumptions / open items / commands executed)."
-  write_prompt code "Implement the approved specification in \$SOLO_SPEC_DIR against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches). Run quality gates through the crap.sh and dry.sh wrappers ONLY — never a language quality tool and never any mutation testing. Then write your structured handoff (include a 'commit:' header with your candidate commit) to \$SOLO_HANDOFF per docs/solo-handoff-schema.md."
-  write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and have no prior transcript. Inputs: the approved spec in \$SOLO_SPEC_DIR, the diff in \$SOLO_DIFF, and the prior handoffs in \$SOLO_HANDOFFS_DIR. Run ./test.sh and check each scenario ID from the spec is satisfied. Do NOT modify code or commit. Write your verdict and structured handoff (referencing the scenario IDs you checked) to \$SOLO_HANDOFF per docs/solo-handoff-schema.md."
+  write_prompt specify "Read task.md at the repository root and inspect the code it refers to. Produce a specification: write spec.md, and write documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on EACH scenario, all under the directory named by the environment variable \$SOLO_SPEC_DIR. Do NOT write production code and do NOT commit anything. $HANDOFF_INSTRUCTIONS"
+  write_prompt code "Implement the approved specification found under \$SOLO_SPEC_DIR (spec.md and the feature files) against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches, do not touch task.md or test.sh). Run the quality gates through the crap.sh and dry.sh wrappers ONLY — never a language quality tool directly and never any mutation testing. $HANDOFF_INSTRUCTIONS"
+  write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and carry no prior transcript. Inputs available to you: the approved spec under \$SOLO_SPEC_DIR, the diff at \$SOLO_DIFF, and the prior handoffs under \$SOLO_HANDOFFS_DIR. Run ./test.sh and check that each @-tagged scenario ID from the spec's feature files is satisfied; name those scenario IDs in your handoff. Do NOT modify code and do NOT commit. $HANDOFF_INSTRUCTIONS"
 }
 
 RUN_START="$(date +%s)"
@@ -183,6 +221,7 @@ start_fresh() {
 
   local start; start="$(date +%s)"
   run_phase_with_retries specify "$PROJECT"
+  finalize_handoff specify code
   validate_phase_handoff specify
   record_phase specify "$(( $(date +%s) - start ))" ok
 
@@ -217,8 +256,9 @@ run_code_and_verify() {
   # code phase — in the project, on the enforced branch.
   start="$(date +%s)"
   run_phase_with_retries code "$PROJECT"
-  validate_phase_handoff code --changed
   git -C "$PROJECT" rev-parse HEAD > "$STATE/candidate_commit"
+  finalize_handoff code verify "$(git -C "$PROJECT" rev-parse --short=10 HEAD)"
+  validate_phase_handoff code --changed
   record_phase code "$(( $(date +%s) - start ))" ok
   local candidate; candidate="$(cat "$STATE/candidate_commit")"
   local baseline; baseline="$(cat "$STATE/baseline_commit")"
@@ -243,6 +283,7 @@ run_code_and_verify() {
 
   start="$(date +%s)"
   run_phase_with_retries verify "$vwd"
+  finalize_handoff verify done
   validate_phase_handoff verify
   record_phase verify "$(( $(date +%s) - start ))" ok
   git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true

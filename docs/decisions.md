@@ -246,6 +246,30 @@ constitution/role/task reading, the wrappers, swarm_handoff.sh, ready_for_next
 batching, commits, breakers. The design lesson: a captured TUI transcript is not
 evidence of tool execution; the tool must leave its own durable artifact.
 
+## D14 — The structured handoff's routing header is run-solo's job, not the agent's (2026-07-18, m4)
+
+The first B6 solo run surfaced this immediately: the specify phase produced an
+excellent spec (spec.md with R1–R4 + three `@SUT-*` Gherkin scenarios + a
+traceability table), but its handoff was rejected — the real agent wrote the five
+content sections under a markdown title and **omitted the id/from/to/phase/
+created_at header entirely**. Two causes: the phase prompt listed the sections
+but never the header fields, and `docs/solo-handoff-schema.md` lives in the fork,
+not the toy project, so the agent couldn't read it.
+
+Ruling: the routing header is metadata the runner owns, not content the agent
+authors. run-solo now asks each phase for ONLY the five sections and
+`finalize_handoff` prepends the header (id/from/to/phase/created_at, plus the
+candidate commit for the code phase) before validation. This makes the header
+authoritative and correct regardless of how a real agent formats its body — an
+agent that adds a title just contributes a harmless extra section. The phase
+prompts are also self-contained now (the exact section list is embedded, not
+referenced from a file the agent cannot see). Verified: the exact output the real
+agent produced validates green after finalization.
+
+The near-zero-cost specify failure was a fixable tooling gap (ours), not an
+environment failure or agent incapability, so the run continues rather than
+stopping — the standing paid-run-failure stop is for blockers we cannot fix.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

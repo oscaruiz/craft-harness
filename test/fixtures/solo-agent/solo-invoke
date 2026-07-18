@@ -27,14 +27,10 @@ cd "$WORKDIR"
 if [[ "$VARIANT" == stuck ]]; then sleep 300 & wait; exit 0; fi
 
 emit_handoff() { # <from> <to> <commit-line-or-empty> <decisions-bullets>
+  # Body only — run-solo's finalize_handoff prepends the routing header. (The
+  # $3 commit argument is ignored now that the runner owns the header; kept for
+  # call-site compatibility.)
   {
-    echo "id: $(date -u +%Y%m%dT%H%M%S%NZ)_$1"
-    echo "from: $1"
-    echo "to: $2"
-    echo "phase: $1"
-    echo "created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    [[ -n "$3" ]] && echo "$3"
-    echo
     echo "# done"
     echo "- $1 phase completed its work"
     echo "# decisions"
