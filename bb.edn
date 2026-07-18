@@ -13,6 +13,7 @@
                 (require 'craft-harness.real-adapters-test)
                 (require 'craft-harness.wrappers-test)
                 (require 'craft-harness.inspect-run-test)
+                (require 'craft-harness.run-pack-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'craft-harness.launcher-test
@@ -22,5 +23,6 @@
                                                                     'craft-harness.runner-test
                                                                     'craft-harness.real-adapters-test
                                                                     'craft-harness.wrappers-test
-                                                                    'craft-harness.inspect-run-test)]
+                                                                    'craft-harness.inspect-run-test
+                                                                    'craft-harness.run-pack-test)]
                   (System/exit (+ fail error))))}}}

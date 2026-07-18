@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# craft-harness run-pack — milestone 3, behavior B5.
+#
+#   run-pack --project <path> --out <session-dir>
+#            [--wake-cap N] [--session-timeout S] [--idle-grace T] [--socket P]
+#
+# The session driver for a two-pack on a project. It:
+#   * enforces R6 — refuses to start without an approved task.md;
+#   * boots one tmux window per role on a PRIVATE socket, running the default
+#     shell and send-keys'ing the faithful claude launch string (decisions.md
+#     D9: never a freshly-spawned interactive zsh; tools/toy is put on the
+#     window PATH so the cleaner's wrappers resolve);
+#   * plays the handoff daemon's role (decisions.md D7): it delivers each
+#     outbox handoff to the recipient's inbox, wakes that window with a
+#     send-keys wake-up, and records consumption on the durable queue — a
+#     single shared workdir, no per-role worktrees (decisions.md D11);
+#   * applies the R10 breakers: a wake-up cap and a whole-session timeout,
+#     each killing the session with attribution;
+#   * captures every pane into <session-dir>/logs/ and writes a run manifest
+#     (R10 provenance);
+#   * hands off to bin/inspect-run and folds its verdict into the outcome.
+#
+# Exit 0 = the pipeline completed AND the inspector is green; 1 = a breaker
+# fired or the inspector went red; 2 = usage / precondition error.
+set -euo pipefail
+shopt -s nullglob
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() { echo "run-pack: $*" >&2; exit 2; }
+usage() {
+  echo "usage: run-pack --project <path> --out <session-dir> [--wake-cap N] [--session-timeout S] [--idle-grace T] [--socket P]" >&2
+  exit 2
+}
+
+PROJECT=""; OUT=""; WAKE_CAP=8; SESSION_TIMEOUT=60; IDLE_GRACE=2; SOCKET=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    --out) OUT="${2:-}"; shift 2 ;;
+    --wake-cap) WAKE_CAP="${2:-}"; shift 2 ;;
+    --session-timeout) SESSION_TIMEOUT="${2:-}"; shift 2 ;;
+    --idle-grace) IDLE_GRACE="${2:-}"; shift 2 ;;
+    --socket) SOCKET="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$PROJECT" && -n "$OUT" ]] || usage
+for n in "$WAKE_CAP" "$SESSION_TIMEOUT"; do [[ "$n" =~ ^[0-9]+$ ]] || usage; done
+[[ "$IDLE_GRACE" =~ ^[0-9]+$ ]] || usage
+
+[[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+command -v tmux >/dev/null 2>&1 || die "tmux is required (adapters/CONTRACT.md Mode 2)"
+command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+
+# --- R6: the launcher refuses to start without an approved task.md --------
+
+[[ -f "$PROJECT/task.md" ]] \
+  || die "task.md not found in $PROJECT — R6: run-pack refuses to start without an approved task.md"
+
+CONF="$PROJECT/swarmforge/swarmforge.conf"
+[[ -f "$CONF" ]] || die "no pack config at $CONF"
+
+# --- parse the pack's window lines ----------------------------------------
+
+ROLES=(); AGENTS=()
+while read -r kw role agent _rest; do
+  [[ "$kw" == "window" ]] || continue
+  ROLES+=("$role"); AGENTS+=("$agent")
+done < "$CONF"
+(( ${#ROLES[@]} > 0 )) || die "no 'window' lines in $CONF"
+
+# --- session dir + provenance ---------------------------------------------
+
+[[ -e "$OUT" ]] && die "refusing to reuse existing --out $OUT — choose a fresh path"
+mkdir -p "$OUT/logs"
+[[ -n "$SOCKET" ]] || SOCKET="$OUT/tmux.sock"
+MANIFEST="$OUT/manifest.json"
+PHASES_TSV="$OUT/phases.tsv"; : > "$PHASES_TSV"
+REPORT="$OUT/inspect-report.txt"
+
+HB="$PROJECT/.swarmforge/handoffs"
+mkdir -p "$HB/outbox" "$HB/inbox/new" "$HB/inbox/in_process"
+
+BASELINE="$(git -C "$PROJECT" rev-parse HEAD)"
+ENFORCED_BRANCH="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)"
+FORK_COMMIT="$(git -C "$FORK_ROOT" rev-parse HEAD)"
+
+# Provenance for the first agent CLI (best-effort; must not hang on a REPL).
+ADAPTER="${AGENTS[0]}"
+ADAPTER_INFO="$(timeout 5 "$ADAPTER" --version 2>/dev/null | head -1 || true)"
+[[ -n "$ADAPTER_INFO" ]] || ADAPTER_INFO="$ADAPTER unknown"
+
+SESS="runpack-$$"
+WAKE_MSG="You have new handoff mail. If idle, run ready_for_next.sh."
+
+# The window's default shell may source rc files that rewrite PATH (e.g. add a
+# globally-installed claude ahead of ours). Bake run-pack's own PATH into the
+# launch string so the intended CLI — the test fake, or B6's real claude — wins
+# deterministically, whatever the interactive shell did to PATH.
+RUNPACK_PATH="$PATH"
+
+# --- helpers --------------------------------------------------------------
+
+header() { sed -n "/^\$/q; s/^$2: //p" "$1" | head -1; }  # <file> <field>
+now_s() { date +%s; }
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+launch_string() { # <role>: faithful claude Mode-2 launch + tools/toy on PATH
+  local role="$1"
+  local prompt="$PROJECT/swarmforge/roles/$role.prompt"
+  printf "export SWARMFORGE_ROLE=%q && export PATH=%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
+    "$role" "$FORK_ROOT/tools/toy" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$prompt" "SwarmForge $role" "$prompt"
+}
+
+capture_panes() {
+  local role
+  for role in "${ROLES[@]}"; do
+    tmux -S "$SOCKET" capture-pane -t "$SESS:$role" -p -S - > "$OUT/logs/$role.log" 2>/dev/null || true
+  done
+}
+
+teardown() { tmux -S "$SOCKET" kill-server >/dev/null 2>&1 || true; }
+trap teardown EXIT
+
+wait_for_outbox() { # <timeout-s> -> prints the oldest handoff path, or nothing
+  local budget="$1" waited=0
+  while :; do
+    local files=("$HB/outbox"/*.handoff)
+    if (( ${#files[@]} > 0 )); then
+      printf '%s\n' "$(ls -1t "$HB/outbox"/*.handoff | tail -1)"
+      return 0
+    fi
+    (( waited >= budget * 5 )) && return 1
+    sleep 0.2
+    waited=$(( waited + 1 ))
+  done
+}
+
+record_consumption() { # move inbox/new -> inbox/in_process, stamp dequeued_at
+  local f base
+  for f in "$HB/inbox/new"/*.handoff; do
+    base="$(basename "$f")"
+    sed "/^created_at:/a dequeued_at: $(now_iso)" "$f" > "$HB/inbox/in_process/$base"
+    rm -f "$f"
+  done
+}
+
+write_manifest() { # <outcome> <wake_count> <duration_s>
+  bb "$FORK_ROOT/adapters/scenario_manifest.bb" "$MANIFEST" "$PHASES_TSV" \
+    "pack=two-pack-lite" \
+    "project=$PROJECT" \
+    "adapter=$ADAPTER" \
+    "adapter_info=$ADAPTER_INFO" \
+    "fork_commit=$FORK_COMMIT" \
+    "baseline_commit=$BASELINE" \
+    "enforced_branch=$ENFORCED_BRANCH" \
+    "wake_cap=$WAKE_CAP" \
+    "wake_count=$2" \
+    "session_timeout_s=$SESSION_TIMEOUT" \
+    "duration_s=$3" \
+    "outcome=$1" >/dev/null
+}
+
+# --- boot: one window per role, default shell, send-keys the launch -------
+
+first=1
+for role in "${ROLES[@]}"; do
+  if (( first )); then
+    tmux -S "$SOCKET" new-session -d -s "$SESS" -n "$role"
+    first=0
+  else
+    tmux -S "$SOCKET" new-window -t "$SESS" -n "$role"
+  fi
+done
+for role in "${ROLES[@]}"; do
+  tmux -S "$SOCKET" send-keys -t "$SESS:$role" "$(launch_string "$role")" Enter
+done
+
+# --- daemon loop with R10 breakers ----------------------------------------
+
+start="$(now_s)"
+wake_count=0
+processed=0
+outcome=""
+while :; do
+  if (( $(now_s) - start >= SESSION_TIMEOUT )); then outcome="timeout"; break; fi
+  h="$(wait_for_outbox "$IDLE_GRACE" || true)"
+  if [[ -z "$h" ]]; then
+    if (( processed > 0 )); then outcome="completed"; fi
+    [[ -n "$outcome" ]] && break
+    continue
+  fi
+  to="$(header "$h" to)"
+  wake_count=$(( wake_count + 1 ))
+  if (( wake_count > WAKE_CAP )); then outcome="wake_cap_exceeded"; break; fi
+  mv "$h" "$HB/inbox/new/"
+  if [[ -n "$to" ]]; then
+    tmux -S "$SOCKET" send-keys -t "$SESS:$to" "$WAKE_MSG" Enter || true
+  fi
+  record_consumption
+  processed=$(( processed + 1 ))
+done
+
+duration=$(( $(now_s) - start ))
+capture_panes
+teardown
+
+write_manifest "$outcome" "$wake_count" "$duration"
+
+# --- hand off to the inspector --------------------------------------------
+
+inspect_rc=0
+bash "$FORK_ROOT/bin/inspect-run" "$OUT" "$PROJECT" > "$REPORT" 2>&1 || inspect_rc=$?
+cat "$REPORT"
+
+echo
+echo "run-pack: outcome=$outcome wake_count=$wake_count/$WAKE_CAP duration=${duration}s"
+echo "run-pack: evidence in $OUT (logs/, manifest.json, inspect-report.txt)"
+
+case "$outcome" in
+  completed)
+    if (( inspect_rc == 0 )); then
+      echo "run-pack: SUCCESS"
+      exit 0
+    fi
+    echo "run-pack: FAILED — the inspector went red on the session evidence" >&2
+    exit 1
+    ;;
+  wake_cap_exceeded)
+    echo "run-pack: FAILED — wake-up cap breaker fired (count $wake_count exceeded cap $WAKE_CAP, R10)" >&2
+    exit 1
+    ;;
+  timeout)
+    echo "run-pack: FAILED — session-timeout breaker fired (${SESSION_TIMEOUT}s, R10)" >&2
+    exit 1
+    ;;
+  *)
+    echo "run-pack: FAILED — session ended without a clean outcome ('$outcome')" >&2
+    exit 1
+    ;;
+esac

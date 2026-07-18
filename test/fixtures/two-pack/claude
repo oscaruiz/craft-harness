@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# Fake `claude` for the run-pack suite (milestone 3, behavior B5). It stands in
+# for a real Claude Code interactive session in a tmux window: it ignores the
+# claude CLI flags, dispatches on $SWARMFORGE_ROLE (coder|cleaner) and the test
+# variant $RUNPACK_FAKE, and behaves like the upstream interactive agent — it
+# does its turn-0 work from launch, then READS STDIN, treating each line sent
+# into the pane (a send-keys wake-up) as the trigger for its next turn. It
+# never exits on its own; run-pack tears the session down.
+#
+# Variants:
+#   happy    — coder fixes+commits+hands off; cleaner runs the wrappers,
+#              commits, hands back; coder then quiesces (the pipeline ends).
+#   pingpong — both roles hand back on every wake, so the pipeline never
+#              quiesces: the wake-up cap breaker must kill it (R10).
+#   stuck    — coder hangs on turn 0 and never hands off: the session-timeout
+#              breaker must kill it (R10).
+set -uo pipefail
+
+role="${SWARMFORGE_ROLE:-unknown}"
+variant="${RUNPACK_FAKE:-happy}"
+hb=".swarmforge/handoffs"
+mkdir -p "$hb/outbox"
+
+stamp() { date -u +%Y%m%dT%H%M%S%NZ; }
+
+emit_handoff() { # <to> <from> <priority>
+  local to="$1" from="$2" prio="$3" s c
+  s="$(stamp)"
+  c="$(git rev-parse --short=10 HEAD)"
+  cat > "$hb/outbox/${prio}_${s}_${from}_to_${to}.handoff" <<EOF
+id: ${s}_from_${from}
+from: ${from}
+to: ${to}
+priority: ${prio}
+type: git_handoff
+role: ${from}
+task: toy-task
+commit: ${c}
+created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Re-read your role and constitution.
+
+merge_and_process ${from} ${c}
+EOF
+}
+
+coder_work() {
+  echo "[coder] applying task.md fix to sut.sh"
+  printf '#!/usr/bin/env bash\necho 42\n' > sut.sh
+  git add sut.sh
+  git commit -q -m "coder: fix sut.sh to print 42" || true
+  emit_handoff cleaner coder 50
+  echo "[coder] committed and handed off to cleaner"
+}
+
+cleaner_work() {
+  echo "[cleaner] running quality gates on changed code (wrappers only)"
+  crap.sh sut.sh || true
+  dry.sh sut.sh || true
+  git commit -q --allow-empty -m "cleaner: quality gates green (CRAP<=6, DRY)" || true
+  emit_handoff coder cleaner 00
+  echo "[cleaner] gates green; handed back to coder"
+}
+
+turn=0
+do_turn() {
+  case "$role" in
+    coder)
+      if [[ "$variant" == stuck ]]; then
+        echo "[coder] (stuck variant) hanging forever"
+        while true; do sleep 1; done
+      fi
+      if (( turn == 0 )); then
+        coder_work
+      elif [[ "$variant" == pingpong ]]; then
+        coder_work
+      else
+        echo "[coder] cleanup acknowledged; nothing left to do"
+      fi
+      ;;
+    cleaner)
+      if (( turn == 0 )); then
+        echo "[cleaner] idle, waiting for a coder handoff"
+      else
+        cleaner_work
+      fi
+      ;;
+    *)
+      echo "fake claude: unknown role '$role'" >&2
+      ;;
+  esac
+  turn=$(( turn + 1 ))
+}
+
+do_turn                       # turn 0, from the launch prompt
+while IFS= read -r line; do    # subsequent turns, one per send-keys wake-up
+  [[ -z "$line" ]] && continue
+  do_turn
+done

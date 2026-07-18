@@ -132,6 +132,42 @@ source of truth. Owner ruling: keep `oscaruiz` set **repo-locally**
 so the author/session-email mismatch is not mistaken later for a leak or a
 misconfiguration.
 
+## D11 — For the toy two-pack run, run-pack owns the durable queue in a single shared workdir (2026-07-18, m3)
+
+Building the two-pack session driver (`bin/run-pack`, B5) forced a choice the
+design left open for the light path: upstream swarm-forge runs each role in its
+own git worktree under `.worktrees/`, and a background handoff daemon
+(`handoffd.bb`) delivers handoffs between those worktrees' inboxes and wakes
+idle agents by `tmux send-keys`. Reproducing that whole apparatus for one toy
+task is scope without cause for m3, and upstream's own `run-main!` ends in a
+blocking `attach-session` (or GUI terminal surfaces) that a headless supervised
+run cannot use.
+
+Ruling for m3:
+
+- **Single shared workdir, sequential waking.** Both roles run in the project
+  root; run-pack wakes exactly one role at a time and waits for its outbox
+  before waking the other, so a shared workdir never sees concurrent edits.
+  Per-role worktrees (R4 "independent judgment") are a six-pack / solo-pack
+  concern; two-pack-lite's cleaner is not the isolated verifier. The pack's
+  `swarmforge.conf` still carries the upstream worktree tokens (`master`,
+  `cleaner`); run-pack maps them to the project root for now.
+- **run-pack plays the daemon (decisions.md D7).** It delivers each outbox
+  handoff to the recipient's `inbox/new/`, issues the send-keys wake-up, and
+  records consumption on the durable queue (`inbox/in_process/` + `dequeued_at`)
+  — the ready_for_next stand-in. This keeps the wake-up cap OURS and countable
+  (the R10 breaker needs an authoritative count), which a black-box upstream
+  daemon would not give us.
+- **What stays honest.** The inspector's star asserts — (a) no mutation
+  invocation and (b) executed CRAP threshold 6 — are read from the agents' own
+  captured pane output and are NOT forgeable by run-pack. The handoff check (d)
+  verifies the pipeline's shape (well-formed, delivered, consumed) with run-pack
+  as the daemon; it is a shape check, not an anti-forgery claim about the agent.
+
+Consequence for later milestones: faithful worktree-per-role and use of the
+upstream `handoffd.bb` are deferred until a pack actually needs parallel roles
+(six-pack) or the solo-pack defines its own session state (m4, per D6).
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
