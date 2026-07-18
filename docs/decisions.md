@@ -40,6 +40,29 @@ sanctioned touch of `swarmforge/scripts/`: content is byte-identical modulo
 `\r`. For future upstream merges set `merge.renormalize=true` (repo-local
 config, not versioned — re-set it after a fresh clone).
 
+**Owner ratification (2026-07-18):** ratified, with a process note — per
+CLAUDE.md, stop-and-report must precede action on any design/reality clash;
+here the normalization was applied before the ruling. Next clash: pause first.
+
+## D6 — "Session in flight" is defined by the upstream plumbing's structures (2026-07-18, m1)
+
+`doctor` (and the run/upgrade refusals built on it) detects an in-flight
+session by probing the state the packs will actually leave behind — the
+upstream swarm-forge handoff plumbing, verified in source
+(`handoff_lib.bb`, `swarmforge.bb`, `ready_for_next_task.bb`):
+
+- agent worktrees under `.worktrees/`
+- unconsumed handoffs in `.swarmforge/handoffs/inbox/new/`
+- half-processed handoffs in `.swarmforge/handoffs/inbox/in_process/`
+- unsent handoffs in `.swarmforge/handoffs/outbox/`
+
+`.craft-harness/` is launcher-only metadata (installed store, `current`
+pointer, recorded pack and branch) and is NOT a session-state relocation:
+R8's persistent queues are exactly the upstream directories above. The
+solo-pack's sequential runner (m4) will define its own session state and
+extend doctor's probes then — m1 deliberately freezes only the upstream
+probes, so no m3–4 contract is constrained by an m1 test.
+
 ## D4 — Reference platform for the suite and the demo is WSL (2026-07-18, m1)
 
 The dev machine is Windows; supported platforms are macOS/Linux/WSL. The test

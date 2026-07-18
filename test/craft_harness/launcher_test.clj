@@ -135,9 +135,10 @@
           [rel (slurp (str f))])))
 
 (defn fabricate-in-flight!
-  "Persistent session state: an unconsumed handoff in the project queue."
+  "In-flight session exactly as the upstream plumbing leaves it (decisions.md
+   D6): an unconsumed handoff in .swarmforge/handoffs/inbox/new/."
   [toy]
-  (write-file (fs/path toy ".craft-harness" "queue" "0001-coder-to-cleaner.handoff")
+  (write-file (fs/path toy ".swarmforge" "handoffs" "inbox" "new" "0001-cleaner.handoff")
               (str "id: 1\nfrom: coder\nto: cleaner\npriority: 10\n"
                    "type: git_handoff\ntask: toy-task\n\n"
                    "merge_and_process coder deadbeef\n")))
@@ -226,6 +227,46 @@
           "the refusal must say an in-flight session was detected")
       (is (= before (snapshot fork toy))
           "a refused run must not touch the project"))))
+
+;; --- behavior micro-tests (C1, C3, C5) ----------------------------------
+
+(deftest run-refuses-without-task-md
+  (let [fork (make-fork!)
+        toy (make-toy!)]
+    (fs/delete (fs/path toy "task.md"))
+    (let [res (craft! fork {:ok? false} "run" "--project" (str toy)
+                      "--pack" pack-branch)]
+      (is (not= 0 (:exit res)) "run without task.md must refuse (R6)")
+      (is (str/includes? (str (:out res) (:err res)) "task.md"))
+      (is (not (fs/exists? (fs/path toy ".craft-harness")))
+          "a refused run must leave nothing behind"))))
+
+(deftest run-touches-only-manifest-paths
+  (let [fork (make-fork!)
+        toy (make-toy!)]
+    (write-file (fs/path toy "src" "untouched.txt") "precious\n")
+    (install! fork toy)
+    (is (= "precious\n" (slurp (str (fs/path toy "src" "untouched.txt"))))
+        "files outside the manifest must never be touched")
+    (is (= pack-branch (str/trim (slurp (str (fs/path toy ".craft-harness" "pack")))))
+        "run must record the installed pack")
+    (is (= "main" (str/trim (slurp (str (fs/path toy ".craft-harness" "branch")))))
+        "run must record the enforced working branch")
+    (doseq [e (manifest-entries fork)]
+      (is (fs/exists? (fs/path toy e)) (str e " must be materialized")))))
+
+(deftest upgrade-refuses-over-in-flight-session
+  (let [fork (make-fork!)
+        toy (make-toy!)]
+    (install! fork toy)
+    (commit-fork-change! fork)
+    (fabricate-in-flight! toy)
+    (let [before (snapshot fork toy)
+          res (craft! fork {:ok? false} "upgrade" "--project" (str toy))]
+      (is (not= 0 (:exit res)) "upgrade over an in-flight session must refuse")
+      (is (re-find #"(?i)in.flight" (str (:out res) (:err res))))
+      (is (= before (snapshot fork toy))
+          "a refused upgrade must not touch the project"))))
 
 ;; --- exit criterion 5: doctor distinguishes the four states -------------
 
