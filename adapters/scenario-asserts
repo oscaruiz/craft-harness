@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# craft-harness scenario asserts — milestone 2, behavior B1.
+#
+# Deterministic checks over the canonical adapter-certification scenario
+# (edit → test → commit → handoff → wake-up, design v2.2 R1). Each phase is
+# a pure function of repo/git state: no agent output is trusted, only what
+# is observable in the workdir. Exit 0 = pass, 1 = assert failed (reason on
+# stderr), 2 = usage error.
+set -euo pipefail
+shopt -s nullglob
+
+# Must stay byte-identical to hooks/pre-commit (guarded by the test
+# blacklist-regex-matches-pre-commit-hook).
+BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
+
+usage() {
+  echo "usage: scenario-asserts <edit|test|commit|handoff|wakeup> --workdir <dir> [--baseline <commit>] [--branch <name>]" >&2
+  exit 2
+}
+
+PHASE="${1:-}"
+case "$PHASE" in
+  edit|test|commit|handoff|wakeup) shift ;;
+  *) usage ;;
+esac
+
+WORKDIR=""
+BASELINE=""
+BRANCH=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --baseline) BASELINE="${2:-}"; shift 2 ;;
+    --branch) BRANCH="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$WORKDIR" && -d "$WORKDIR" ]] || usage
+
+fail() { echo "ASSERT FAIL $PHASE: $*" >&2; exit 1; }
+ok() { echo "ASSERT OK $PHASE"; exit 0; }
+g() { git -C "$WORKDIR" "$@"; }
+
+header() { # <file> <field>: value from the header block (before first blank line)
+  sed -n "/^\$/q; s/^$2: //p" "$1" | head -1
+}
+
+require_baseline() { [[ -n "$BASELINE" ]] || usage; }
+
+# --- edit: sut.sh differs from the baseline (worktree or committed) -------
+
+assert_edit() {
+  require_baseline
+  if g diff --quiet "$BASELINE" -- sut.sh; then
+    fail "sut.sh unchanged since baseline $BASELINE — no edit happened"
+  fi
+  ok
+}
+
+# --- test: the runner executes ./test.sh itself; the agent's word is not
+# --- evidence -------------------------------------------------------------
+
+assert_test() {
+  if (cd "$WORKDIR" && ./test.sh >/dev/null 2>&1); then
+    ok
+  fi
+  fail "./test.sh failed — the fix does not pass the toy test"
+}
+
+# --- commit: new commit, enforced branch, clean tracked tree, blacklist ---
+
+assert_commit() {
+  require_baseline
+  [[ -n "$BRANCH" ]] || usage
+  local current head base violations
+  current="$(g rev-parse --abbrev-ref HEAD)"
+  [[ "$current" == "$BRANCH" ]] \
+    || fail "commit is on branch '$current' but the enforced branch is '$BRANCH'"
+  head="$(g rev-parse HEAD)"
+  base="$(g rev-parse "$BASELINE^{commit}")"
+  [[ "$head" != "$base" ]] || fail "no new commit since baseline $BASELINE"
+  if [[ -n "$(g status --porcelain --untracked-files=no)" ]]; then
+    fail "uncommitted changes to tracked files — the work is not fully committed"
+  fi
+  violations="$(g diff --name-only "$base" HEAD | grep -E "$BLACKLIST" || true)"
+  if [[ -n "$violations" ]]; then
+    fail "commit touches forbidden path(s): $violations"
+  fi
+  ok
+}
+
+# --- handoff: exactly one well-formed handoff in the outbox ---------------
+
+assert_handoff() {
+  local outbox="$WORKDIR/.swarmforge/handoffs/outbox"
+  local files=("$outbox"/*.handoff)
+  (( ${#files[@]} > 0 )) || fail "no handoff found in the outbox ($outbox)"
+  (( ${#files[@]} == 1 )) || fail "expected exactly one handoff in the outbox, found ${#files[@]}"
+  local f="${files[0]}" field value type
+  for field in id from to priority type created_at; do
+    [[ -n "$(header "$f" "$field")" ]] \
+      || fail "missing required header '$field' in $(basename "$f")"
+  done
+  value="$(header "$f" priority)"
+  [[ "$value" =~ ^[0-9]{2}$ ]] \
+    || fail "header 'priority' must be two digits, got '$value'"
+  type="$(header "$f" type)"
+  case "$type" in
+    git_handoff)
+      for field in role task commit; do
+        [[ -n "$(header "$f" "$field")" ]] \
+          || fail "missing required header '$field' for git_handoff in $(basename "$f")"
+      done
+      value="$(header "$f" commit)"
+      [[ "$value" =~ ^[0-9a-fA-F]{10}$ ]] \
+        || fail "header 'commit' must be 10 hexadecimal characters, got '$value'"
+      g rev-parse --verify --quiet "$value^{commit}" >/dev/null \
+        || fail "handoff commit '$value' does not resolve to a commit in the workdir"
+      ;;
+    note) ;;
+    *) fail "header 'type' must be git_handoff or note, got '$type'" ;;
+  esac
+  ok
+}
+
+# --- wakeup: the durable inbox proves consumption (decisions.md D7) -------
+
+assert_wakeup() {
+  local inbox="$WORKDIR/.swarmforge/handoffs/inbox"
+  local new=("$inbox/new"/*.handoff)
+  (( ${#new[@]} == 0 )) \
+    || fail "handoff still sitting in inbox/new — the wake-up was not consumed"
+  local consumed=("$inbox/in_process"/*.handoff "$inbox/completed"/*.handoff)
+  (( ${#consumed[@]} > 0 )) \
+    || fail "no consumed handoff in inbox/in_process or inbox/completed"
+  local f
+  for f in "${consumed[@]}"; do
+    [[ -n "$(header "$f" dequeued_at)" ]] \
+      || fail "handoff $(basename "$f") has no 'dequeued_at' header — it was never dequeued via ready_for_next"
+  done
+  ok
+}
+
+case "$PHASE" in
+  edit) assert_edit ;;
+  test) assert_test ;;
+  commit) assert_commit ;;
+  handoff) assert_handoff ;;
+  wakeup) assert_wakeup ;;
+esac
