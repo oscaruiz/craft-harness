@@ -130,6 +130,40 @@
       (is (not (zero? (:exit r))))
       (is (re-find #"(?i)duplicate" (:err r))))))
 
+;; --- anti-drift: the hook's embedded parser must match bin/parse-owns --------
+;; hooks/pre-commit is a self-contained copy under .git/hooks/, so it embeds its
+;; own parse_owns(). It exposes a `--parse-owns <file>` escape hatch (inert in
+;; normal operation — git passes the hook no args) so this test can feed the same
+;; battery to both and assert identical (stdout, exit). Same anti-drift pattern as
+;; the blacklist/inspect-run guard.
+
+(def pre-commit (str (fs/path repo-root "hooks" "pre-commit")))
+
+(defn hook-parse [file]
+  (let [r (sh/sh "bash" pre-commit "--parse-owns" file
+                 :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")})]
+    {:exit (:exit r) :globs (->> (str/split-lines (:out r)) (remove str/blank?) vec)}))
+
+(deftest owns-parser-matches-between-parse-owns-and-hook
+  (testing "the hook's embedded parser agrees with bin/parse-owns on every case"
+    (doseq [content ["owns:\n  src/core/**\n  build.gradle\n"          ; valid
+                     "owns:\n  a/**\n  b.txt"                          ; EOF-terminated
+                     "Notes:\n  prose\nowns:\n  src/**\n"              ; prose ignored
+                     "no owns block at all\n"                         ; empty
+                     "owns: src/core/**\n"                            ; inline value (malformed)
+                     "owns:\n\nprose\n"                               ; empty block (malformed)
+                     "owns:\n  src/ core/**\n"                        ; whitespace (malformed)
+                     "owns:\n  /etc/passwd\n"                         ; absolute (malformed)
+                     "owns:\n  ../secrets/**\n"                       ; traversal (malformed)
+                     "owns:\n  a/**\nowns:\n  b/**\n"]]                ; duplicate (malformed)
+      (let [f (tmp-file content)
+            a (parse f)
+            b (hook-parse f)]
+        (is (= (boolean (zero? (:exit a))) (boolean (zero? (:exit b))))
+            (str "exit disagreement on:\n" content))
+        (is (= (:globs a) (:globs b))
+            (str "glob disagreement on:\n" content))))))
+
 ;; --- interface hygiene -------------------------------------------------------
 
 (deftest parse-owns-usage-is-clear

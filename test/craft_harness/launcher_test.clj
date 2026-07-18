@@ -212,6 +212,58 @@
         (is (= 0 (:exit res))
             (str "hook must not block allowed paths: " (:out res) (:err res)))))))
 
+;; --- m4.5 / D17 / D19: the hook enforces the owns: allowlist too ---------
+;; Defence in depth (D2): when project.prompt declares an owns: set, the
+;; pre-commit hook refuses staged paths outside it (the blacklist still runs
+;; first). So a bypassed run-solo is caught by the hook, and a bypassed hook is
+;; caught by run-solo. No owns: block => the old blacklist-only behavior.
+
+(defn write-owns! [toy block]
+  (write-file (fs/path toy "project.prompt")
+              (str "Role prompt prose the agent reads.\n\nowns:\n" block "\n")))
+
+(deftest pre-commit-allowlist-rejects-out-of-scope-staged-path
+  (let [fork (make-fork!) toy (make-toy!)]
+    (install! fork toy)
+    (write-owns! toy "  src/**")
+    (write-file (fs/path toy "infra" "deploy.txt") "out of scope\n")
+    (git! toy "add" "infra/deploy.txt")
+    (let [res (sh-run {:dir toy :ok? false} "git" "commit" "-m" "touch out-of-scope path")]
+      (is (not= 0 (:exit res)) "a staged path outside owns: must be rejected")
+      (is (str/includes? (str (:out res) (:err res)) "infra/deploy.txt")
+          "the rejection must name the offending path")
+      (is (re-find #"(?i)owned|owns|scope" (str (:out res) (:err res)))))))
+
+(deftest pre-commit-allowlist-allows-in-scope-staged-path
+  (let [fork (make-fork!) toy (make-toy!)]
+    (install! fork toy)
+    (write-owns! toy "  src/**")
+    (write-file (fs/path toy "src" "feature.txt") "legit owned work\n")
+    (git! toy "add" "src/feature.txt")
+    (let [res (sh-run {:dir toy :ok? false} "git" "commit" "-q" "-m" "owned work")]
+      (is (= 0 (:exit res))
+          (str "a staged path inside owns: must be allowed: " (:out res) (:err res))))))
+
+(deftest pre-commit-allowlist-is-fail-closed-on-a-malformed-contract
+  (let [fork (make-fork!) toy (make-toy!)]
+    (install! fork toy)
+    (write-owns! toy "  ../escape/**")       ; traversal — malformed
+    (write-file (fs/path toy "src" "feature.txt") "work\n")
+    (git! toy "add" "src/feature.txt")
+    (let [res (sh-run {:dir toy :ok? false} "git" "commit" "-m" "work under a malformed contract")]
+      (is (not= 0 (:exit res)) "a malformed owns: block must refuse the commit (fail-closed)")
+      (is (re-find #"(?i)owns|owned|contract" (str (:out res) (:err res)))))))
+
+(deftest pre-commit-without-owns-keeps-blacklist-only-behavior
+  (testing "no project.prompt => any non-blacklisted path commits (backward compatible)"
+    (let [fork (make-fork!) toy (make-toy!)]
+      (install! fork toy)
+      (write-file (fs/path toy "anywhere" "file.txt") "no allowlist declared\n")
+      (git! toy "add" "anywhere/file.txt")
+      (let [res (sh-run {:dir toy :ok? false} "git" "commit" "-q" "-m" "unowned but allowed")]
+        (is (= 0 (:exit res))
+            (str "with no owns: block, an arbitrary path must commit: " (:out res) (:err res)))))))
+
 ;; --- exit criterion 4: run refuses over an in-flight session ------------
 
 (deftest run-refuses-over-in-flight-session
