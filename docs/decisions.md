@@ -81,3 +81,36 @@ solo-pack's phase mechanism (m4).
 The dev machine is Windows; supported platforms are macOS/Linux/WSL. The test
 suite and the milestone demos run under WSL (Ubuntu), not Git Bash: Git Bash
 results are considered provisional only.
+
+## D8 — Codex certification deferred by owner decision; R1 genericity stays OPEN (2026-07-18, m2)
+
+The Codex CLI is not natively installed in the reference WSL environment: the
+only `codex` on `PATH` is a Windows npm shim under `/mnt/c/...`, and per D4 a
+run over that interop shim is not an accepted result — it would either fail or
+produce a bogus green against the very shims we are certifying out. The owner
+ruled to close m2 without the paid Codex run rather than block on tooling.
+
+Consequences:
+
+- **m2 exit criterion amended.** From "documented contract + fakes suite + two
+  certification logs (Claude Code + Codex)" to **documented contract + fakes
+  suite + Claude Code certification log**. The Codex scenario log is dropped
+  from m2's exit and reflected as such in `docs/current-milestone.md`.
+- **Codex becomes a named blocking item for m3.** The Codex certification run
+  MUST land before the m3 PR merges. No code is owed — B6's argv-recording
+  stub already verifies Codex's command construction offline (unit, free) — so
+  only the paid run over a native Linux `codex` is pending.
+- **R1 genericity stays OPEN.** The design's genericity proof (§7.2 / R1: "the
+  same scenario passing with a second backend") is NOT yet demonstrated. R1's
+  genericity claim is **OPEN until D8 clears** (the Codex run lands). Claude
+  Code as the primary/verified backend is unaffected.
+
+## Known-flaky tests
+
+- `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
+  `test/swarmforge/handoff_test.clj`) — **KNOWN-FLAKY**. Timing/polling based:
+  it races a daemon shutdown and pid-file removal, so it is intermittently red
+  through no code change. Named here because an intermittently-red green erodes
+  trust in the whole suite, and naming it is the cheap way to contain it until
+  upstream fixes it. Not our code (upstream is untouched per CLAUDE.md); a
+  re-run clears it.
