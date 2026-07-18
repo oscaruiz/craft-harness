@@ -1,0 +1,1 @@
+Read task.md at the repository root and inspect the code it refers to. Produce a specification: write spec.md, and write documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on EACH scenario, all under the directory named by the environment variable $SOLO_SPEC_DIR. Do NOT write production code and do NOT commit anything.
