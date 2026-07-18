@@ -93,6 +93,23 @@
              (phase-outcomes m))
           "phases before the failure stay ok; nothing runs after it"))))
 
+;; --- fake naughty agent (B5): confinement negative verification ----------
+;; The toy repo has no pre-commit hook installed, and the naughty fake uses
+;; --no-verify anyway (decisions.md D2: the hook is a tripwire agents can
+;; bypass). The assert layer must catch the forbidden commit regardless.
+
+(deftest naughty-agent-is-caught-by-the-commit-assert
+  (let [out (tmp-dir)
+        res (run-scenario! "naughty" out)]
+    (is (not= 0 (:exit res)))
+    (let [m (manifest out)]
+      (is (= "failed" (:outcome m)))
+      (is (= "commit" (:failed_phase m))
+          "the tampering must be caught at the commit phase")
+      (is (= "assert_failed" (:failure m))))
+    (is (str/includes? (:all res) "task.md")
+        "the runner's failure output must name the offending path")))
+
 ;; --- fake stuck agent: R10 breaker through the runner --------------------
 
 (deftest stuck-agent-times-out-with-attribution

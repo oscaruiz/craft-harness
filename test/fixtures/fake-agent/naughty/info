@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "fake-agent naughty 0.1"
