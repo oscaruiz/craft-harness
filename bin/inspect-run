@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# craft-harness inspect-run — milestone 3, behavior B4.
+#
+#   inspect-run <session-dir> <project>
+#
+# The post-run inspector: pure deterministic checks over a finished pack
+# session's evidence (the logs run-pack captured) and the project's git and
+# handoff state. No agent output is ever trusted as a verdict — only what is
+# observable. Usable both by the bb suite (fabricated sessions) and by the
+# real run (B6), which commits the green report as evidence.
+#
+# Checks (design v2.2 §7.3; R3/R6/R9/R10):
+#   (a) NO mutation invocation anywhere in the session logs — the star assert
+#   (b) the executed CRAP threshold was 6, read from the wrapper logs
+#   (c) commits only on the enforced branch, touching no blacklisted path
+#   (d) handoffs well-formed and consumed
+#   (e) wake-up count within the R10 cap
+#
+# Exit 0 = every check green; 1 = at least one red (each named); 2 = usage.
+set -euo pipefail
+shopt -s nullglob
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Must stay byte-identical to hooks/pre-commit (guarded by the test
+# blacklist-stays-identical-to-the-pre-commit-hook).
+BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
+
+# Mutation-INVOCATION signatures (design R3/R7: mutation is out of scope for the
+# two-pack). These match a mutation tool being RUN or its output — never the
+# cleaner's own prose forbidding it ("no PIT, no Stryker, no mutate tool"),
+# which must not be a false positive.
+MUTATION='org\.pitest|pitest-maven|mutationcoverage|mutate4java|mutate\.sh|npx[[:space:]]+stryker|stryker[[:space:]]+run|stryker\.conf|mutants?[[:space:]]+(killed|survived)'
+
+usage() { echo "usage: inspect-run <session-dir> <project>" >&2; exit 2; }
+
+SESSION="${1:-}"; PROJECT="${2:-}"
+[[ -n "$SESSION" && -n "$PROJECT" ]] || usage
+[[ -d "$SESSION" ]] || { echo "inspect-run: session dir not found: $SESSION" >&2; exit 2; }
+[[ -d "$PROJECT/.git" ]] || { echo "inspect-run: not a git repository: $PROJECT" >&2; exit 2; }
+
+LOGS="$SESSION/logs"
+MANIFEST="$SESSION/manifest.json"
+[[ -f "$MANIFEST" ]] || { echo "inspect-run: manifest.json not found in $SESSION" >&2; exit 2; }
+
+g() { git -C "$PROJECT" "$@"; }
+header() { sed -n "/^\$/q; s/^$2: //p" "$1" | head -1; }  # <file> <field>
+
+# check results, one line each: "PASS <label>" / "FAIL <label>: <reason>"
+declare -a RESULTS=()
+FAILED=0
+pass() { RESULTS+=("PASS $1"); }
+fail() { RESULTS+=("FAIL $1: $2"); FAILED=1; }
+
+# --- manifest fields ------------------------------------------------------
+
+command -v bb >/dev/null 2>&1 || { echo "inspect-run: babashka (bb) is required" >&2; exit 2; }
+mapfile -t MF < <(bb "$FORK_ROOT/bin/inspect_manifest.bb" "$MANIFEST" \
+                     enforced_branch baseline_commit wake_cap wake_count)
+ENFORCED_BRANCH="${MF[0]:-}"
+BASELINE="${MF[1]:-}"
+WAKE_CAP="${MF[2]:-}"
+WAKE_COUNT="${MF[3]:-}"
+
+# --- (a) no mutation invocation in the session logs -----------------------
+
+check_mutation() {
+  local hits
+  hits="$(grep -rniE "$MUTATION" "$LOGS" 2>/dev/null || true)"
+  if [[ -n "$hits" ]]; then
+    fail "no-mutation" "mutation invocation found in session logs: $(echo "$hits" | head -1)"
+  else
+    pass "no-mutation"
+  fi
+}
+
+# --- (b) the executed CRAP threshold was 6 (from the wrapper logs) --------
+
+check_crap_threshold() {
+  local vals
+  mapfile -t vals < <(grep -rhoE 'crap: threshold=[0-9]+' "$LOGS" 2>/dev/null \
+                        | sed 's/.*=//' | sort -u)
+  if (( ${#vals[@]} == 0 )); then
+    fail "crap-threshold-6" "the CRAP wrapper never ran (no 'crap: threshold=' in the logs) — the quality gate was not exercised"
+    return
+  fi
+  local v
+  for v in "${vals[@]}"; do
+    if [[ "$v" != "6" ]]; then
+      fail "crap-threshold-6" "executed CRAP threshold was $v, not 6 — the wrapper's single-source-of-truth threshold was tampered"
+      return
+    fi
+  done
+  pass "crap-threshold-6"
+}
+
+# --- (c) commits only on the enforced branch, no blacklisted path ---------
+
+check_commits() {
+  [[ -n "$ENFORCED_BRANCH" ]] || { fail "commits-confined" "manifest has no enforced_branch"; return; }
+  [[ -n "$BASELINE" ]] || { fail "commits-confined" "manifest has no baseline_commit"; return; }
+  local current base violations
+  current="$(g rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" != "$ENFORCED_BRANCH" ]]; then
+    fail "commits-confined" "HEAD is on branch '$current' but the enforced branch is '$ENFORCED_BRANCH'"
+    return
+  fi
+  base="$(g rev-parse --verify --quiet "$BASELINE^{commit}" || true)"
+  [[ -n "$base" ]] || { fail "commits-confined" "baseline_commit $BASELINE does not resolve in the project"; return; }
+  violations="$(g diff --name-only "$base" HEAD | grep -E "$BLACKLIST" || true)"
+  if [[ -n "$violations" ]]; then
+    fail "commits-confined" "commit(s) touch forbidden path(s): $(echo "$violations" | tr '\n' ' ')"
+    return
+  fi
+  pass "commits-confined"
+}
+
+# --- (d) handoffs well-formed and consumed --------------------------------
+
+validate_handoff() { # <file> -> echoes an error string, empty if well-formed
+  local f="$1" field value type
+  for field in id from to priority type created_at; do
+    [[ -n "$(header "$f" "$field")" ]] || { echo "missing header '$field' in $(basename "$f")"; return; }
+  done
+  value="$(header "$f" priority)"
+  [[ "$value" =~ ^[0-9]{2}$ ]] || { echo "priority must be two digits in $(basename "$f"), got '$value'"; return; }
+  type="$(header "$f" type)"
+  case "$type" in
+    git_handoff)
+      for field in role task commit; do
+        [[ -n "$(header "$f" "$field")" ]] || { echo "missing header '$field' for git_handoff in $(basename "$f")"; return; }
+      done
+      value="$(header "$f" commit)"
+      [[ "$value" =~ ^[0-9a-fA-F]{10}$ ]] || { echo "commit must be 10 hex in $(basename "$f"), got '$value'"; return; }
+      g rev-parse --verify --quiet "$value^{commit}" >/dev/null 2>&1 \
+        || { echo "handoff commit '$value' does not resolve in the project"; return; }
+      ;;
+    note) ;;
+    *) echo "type must be git_handoff or note in $(basename "$f"), got '$type'"; return ;;
+  esac
+  echo ""
+}
+
+check_handoffs() {
+  local hb="$PROJECT/.swarmforge/handoffs"
+  local all=("$hb/outbox"/*.handoff
+             "$hb/inbox/new"/*.handoff
+             "$hb/inbox/in_process"/*.handoff
+             "$hb/inbox/completed"/*.handoff)
+  if (( ${#all[@]} == 0 )); then
+    fail "handoffs" "the pack produced no handoff at all (.swarmforge/handoffs is empty)"
+    return
+  fi
+  local new=("$hb/inbox/new"/*.handoff)
+  if (( ${#new[@]} > 0 )); then
+    fail "handoffs" "handoff(s) still unconsumed in inbox/new: $(basename "${new[0]}")"
+    return
+  fi
+  local f err
+  for f in "${all[@]}"; do
+    err="$(validate_handoff "$f")"
+    [[ -z "$err" ]] || { fail "handoffs" "$err"; return; }
+  done
+  # consumed handoffs must carry dequeued_at (ready_for_next semantics, D7)
+  for f in "$hb/inbox/in_process"/*.handoff "$hb/inbox/completed"/*.handoff; do
+    [[ -n "$(header "$f" dequeued_at)" ]] \
+      || { fail "handoffs" "$(basename "$f") was never dequeued via ready_for_next (no dequeued_at)"; return; }
+  done
+  pass "handoffs"
+}
+
+# --- (e) wake-up count within the R10 cap ---------------------------------
+
+check_wake_cap() {
+  [[ "$WAKE_CAP" =~ ^[0-9]+$ ]] || { fail "wake-cap" "manifest wake_cap is not an integer: '$WAKE_CAP'"; return; }
+  [[ "$WAKE_COUNT" =~ ^[0-9]+$ ]] || { fail "wake-cap" "manifest wake_count is not an integer: '$WAKE_COUNT'"; return; }
+  if (( WAKE_COUNT > WAKE_CAP )); then
+    fail "wake-cap" "wake-up count $WAKE_COUNT exceeds the R10 cap $WAKE_CAP"
+  else
+    pass "wake-cap"
+  fi
+}
+
+check_mutation
+check_crap_threshold
+check_commits
+check_handoffs
+check_wake_cap
+
+# --- report ---------------------------------------------------------------
+
+label_of() { # human line per check
+  case "$1" in
+    no-mutation)       echo "(a) no mutation invocation in the session logs" ;;
+    crap-threshold-6)  echo "(b) executed CRAP threshold was 6" ;;
+    commits-confined)  echo "(c) commits only on the enforced branch, no blacklisted path" ;;
+    handoffs)          echo "(d) handoffs well-formed and consumed" ;;
+    wake-cap)          echo "(e) wake-up count within the R10 cap" ;;
+    *)                 echo "$1" ;;
+  esac
+}
+
+echo "inspect-run — session $SESSION against project $PROJECT"
+echo "  enforced branch: ${ENFORCED_BRANCH:-?}   wake-ups: ${WAKE_COUNT:-?}/${WAKE_CAP:-?}"
+echo
+for r in "${RESULTS[@]}"; do
+  status="${r%% *}"; rest="${r#* }"
+  key="${rest%%:*}"
+  if [[ "$status" == PASS ]]; then
+    printf '  [x] %s\n' "$(label_of "$key")"
+  else
+    reason="${rest#*: }"
+    printf '  [ ] %s\n      -> %s\n' "$(label_of "$key")" "$reason"
+  fi
+done
+echo
+if (( FAILED == 0 )); then
+  echo "RESULT: PASS"
+  exit 0
+else
+  echo "RESULT: FAIL"
+  exit 1
+fi
