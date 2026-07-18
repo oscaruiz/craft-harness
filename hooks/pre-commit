@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# craft-harness pre-commit — R9 tripwire (see docs/decisions.md D2: agents can
+# bypass hooks with --no-verify; containment lives in the CLI permissions,
+# this hook stops accidents and leaves evidence).
+set -euo pipefail
+
+# Paths agents must never commit (design v2.2 R9; .git/hooks is unenforceable
+# here and is covered by doctor's hash check instead — decisions.md D1).
+BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
+
+branch_file=".craft-harness/branch"
+if [[ -f "$branch_file" ]]; then
+  enforced=$(<"$branch_file")
+  current=$(git rev-parse --abbrev-ref HEAD)
+  if [[ "$current" != "$enforced" ]]; then
+    echo "pre-commit: commits are only allowed on branch '$enforced' (currently on '$current')" >&2
+    exit 1
+  fi
+fi
+
+violations=$(git diff --cached --name-only | grep -E "$BLACKLIST" || true)
+if [[ -n "$violations" ]]; then
+  echo "pre-commit: refusing commit touching forbidden path(s):" >&2
+  echo "$violations" >&2
+  exit 1
+fi
+
+exit 0
