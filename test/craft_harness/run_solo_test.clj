@@ -252,6 +252,42 @@
       (testing "it actually retried (attempts logged up to the cap)"
         (is (re-find #"attempt 3/3" (:all r)))))))
 
+;; --- D16: phase content comes from the solo-pack pack branch -----------------
+
+(defn branch-role-body [pack phase]
+  (str/trim (:out (sh/sh "git" "-C" (str repo-root) "show"
+                         (str pack ":swarmforge/roles/" phase ".prompt")))))
+
+(deftest seeded-prompts-are-sourced-from-the-solo-pack-branch
+  (testing "each seeded phase prompt carries the body from solo-pack's role file"
+    (let [p (make-project!)]
+      (run-solo! p "happy")                 ; pauses at the gate; all prompts seeded
+      (doseq [phase ["specify" "code" "verify"]]
+        (let [seeded (slurp (str (fs/path (state p) "prompts" (str phase ".prompt"))))
+              body (branch-role-body "solo-pack" phase)]
+          (is (not (str/blank? body)) (str "solo-pack must carry a " phase " role prompt"))
+          (is (str/includes? seeded body)
+              (str phase ".prompt must be sourced from the solo-pack branch")))))))
+
+(deftest unknown-pack-branch-fails-cleanly-naming-the-pack
+  (testing "run-solo resolves --pack against the fork and refuses an absent one"
+    (let [p (make-project!)
+          r (run-solo! p "happy" "--pack" "no-such-pack-branch")]
+      (is (not (zero? (:exit r))) "an absent pack branch must stop the run")
+      (is (re-find #"(?i)pack" (:all r)))
+      (is (str/includes? (:all r) "no-such-pack-branch")
+          "the message must name the missing pack"))))
+
+(deftest a-pack-without-the-solo-phase-list-is-rejected
+  (testing "a branch whose conf is not the solo phase sequence is rejected (two-pack-lite)"
+    (let [p (make-project!)
+          base (head p)
+          r (run-solo! p "happy" "--pack" "two-pack-lite")]
+      (is (not (zero? (:exit r))) "two-pack-lite has no solo phase list — must be rejected")
+      (is (str/includes? (:all r) "two-pack-lite") "the failure must name the offending pack")
+      (is (re-find #"(?i)phase list|sequence" (:all r)) "and the phase-list mismatch")
+      (is (= base (head p)) "no phase may run against a mis-shaped pack"))))
+
 ;; --- interface hygiene -------------------------------------------------------
 
 (deftest run-solo-usage-is-clear

@@ -27,16 +27,17 @@ set -euo pipefail
 FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "run-solo: $*" >&2; exit 1; }
 usage() {
-  echo "usage: run-solo --project <path> --adapter <name-or-dir> [--approval-timeout <s>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>]" >&2
+  echo "usage: run-solo --project <path> --adapter <name-or-dir> [--pack <branch>] [--approval-timeout <s>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>]" >&2
   exit 2
 }
 
-PROJECT=""; ADAPTER=""; APPROVAL_TIMEOUT=0
+PROJECT=""; ADAPTER=""; PACK="solo-pack"; APPROVAL_TIMEOUT=0
 PHASE_TIMEOUT=0; RETRY_CAP=1; RUN_TIMEOUT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT="${2:-}"; shift 2 ;;
     --adapter) ADAPTER="${2:-}"; shift 2 ;;
+    --pack) PACK="${2:-}"; shift 2 ;;
     --approval-timeout) APPROVAL_TIMEOUT="${2:-}"; shift 2 ;;
     --phase-timeout) PHASE_TIMEOUT="${2:-}"; shift 2 ;;
     --retry-cap) RETRY_CAP="${2:-}"; shift 2 ;;
@@ -60,6 +61,35 @@ esac
 for exe in invoke info; do
   [[ -x "$ADAPTER_DIR/$exe" ]] || die "adapter '$ADAPTER': missing executable '$exe'"
 done
+
+# --- pack resolution (D16): the solo-pack branch owns the phase content -----
+# run-solo owns the phase STRUCTURE (the R6 gate, the verify worktree at the
+# candidate commit, commit-on-enforced-branch, the handoff routing header); the
+# pack branch owns each phase's prompt BODY and declares the ordered phase list.
+# We read that content straight from the branch in the fork — exactly how the
+# launcher resolves --pack — so no per-pack entry in MANAGED_FILES.manifest is
+# needed (role files are per-pack; the manifest is a single global list).
+git -C "$FORK_ROOT" rev-parse --verify --quiet "$PACK^{commit}" >/dev/null 2>&1 \
+  || die "pack branch '$PACK' not found in the fork"
+PACK_CONF="$(git -C "$FORK_ROOT" show "$PACK:swarmforge/swarmforge.conf" 2>/dev/null)" \
+  || die "pack '$PACK' has no swarmforge/swarmforge.conf"
+declare -A PACK_ROLE=()
+CONF_PHASES=()
+while read -r kw name _agent role _rest; do
+  [[ "$kw" == "phase" ]] || continue
+  CONF_PHASES+=("$name")
+  PACK_ROLE["$name"]="${role:-$name}"
+done <<< "$PACK_CONF"
+SOLO_SEQUENCE="specify code verify"
+[[ "${CONF_PHASES[*]}" == "$SOLO_SEQUENCE" ]] \
+  || die "pack '$PACK' phase list (${CONF_PHASES[*]:-none}) does not match run-solo's phase sequence ($SOLO_SEQUENCE)"
+for ph in $SOLO_SEQUENCE; do
+  git -C "$FORK_ROOT" show "$PACK:swarmforge/roles/${PACK_ROLE[$ph]}.prompt" >/dev/null 2>&1 \
+    || die "pack '$PACK' missing role prompt for phase '$ph' (swarmforge/roles/${PACK_ROLE[$ph]}.prompt)"
+done
+
+# a phase's prompt body, read from the pack branch (structure-free content).
+load_role_body() { git -C "$FORK_ROOT" show "$PACK:swarmforge/roles/${PACK_ROLE[$1]}.prompt"; }
 
 # --- paths ------------------------------------------------------------------
 STATE="$PROJECT/.craft-harness/solo/current"
@@ -112,7 +142,7 @@ ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
 write_manifest() { # <outcome>
   local args=(
     "$MANIFEST" "$PHASES_TSV"
-    "pack=solo-pack" "project=$PROJECT" "adapter=$ADAPTER" "adapter_info=$ADAPTER_INFO"
+    "pack=$PACK" "project=$PROJECT" "adapter=$ADAPTER" "adapter_info=$ADAPTER_INFO"
     "fork_commit=$(git -C "$FORK_ROOT" rev-parse HEAD)"
     "enforced_branch=$(cat "$STATE/enforced_branch" 2>/dev/null || echo '?')"
     "baseline_commit=$(cat "$STATE/baseline_commit" 2>/dev/null || echo '?')"
@@ -149,11 +179,13 @@ HANDOFF_INSTRUCTIONS="Write your handoff to the file named by the environment va
 
 Every section must be present. Use bullet lines under each heading."
 
+# The phase bodies come from the pack branch (D16); run-solo appends the
+# handoff-section instructions (a control it owns) and the PHASE header.
 seed_prompts() {
   mkdir -p "$PROMPTS"
-  write_prompt specify "Read task.md at the repository root and inspect the code it refers to. Produce a specification: write spec.md, and write documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on EACH scenario, all under the directory named by the environment variable \$SOLO_SPEC_DIR. Do NOT write production code and do NOT commit anything. $HANDOFF_INSTRUCTIONS"
-  write_prompt code "Implement the approved specification found under \$SOLO_SPEC_DIR (spec.md and the feature files) against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches, do not touch task.md or test.sh). Run the quality gates through the wrappers at the paths in the environment variables \$CRAFT_CRAP and \$CRAFT_DRY, invoked by their absolute path on your changed files (e.g. \"\$CRAFT_CRAP\" sut.sh and \"\$CRAFT_DRY\" sut.sh) — use ONLY these wrappers, never a language quality tool directly and never any mutation testing. $HANDOFF_INSTRUCTIONS"
-  write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and carry no prior transcript. Inputs available to you: the approved spec under \$SOLO_SPEC_DIR, the diff at \$SOLO_DIFF, and the prior handoffs under \$SOLO_HANDOFFS_DIR. Run ./test.sh and check that each @-tagged scenario ID from the spec's feature files is satisfied; name those scenario IDs in your handoff. Do NOT modify code and do NOT commit. $HANDOFF_INSTRUCTIONS"
+  write_prompt specify "$(load_role_body specify) $HANDOFF_INSTRUCTIONS"
+  write_prompt code "$(load_role_body code) $HANDOFF_INSTRUCTIONS"
+  write_prompt verify "$(load_role_body verify) $HANDOFF_INSTRUCTIONS"
 }
 
 RUN_START="$(date +%s)"
