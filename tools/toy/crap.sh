@@ -42,7 +42,11 @@ fi
 
 count_complexity() { # <file>: control-flow constructs, 0 if unreadable
   [[ -f "$1" ]] || { echo 0; return; }
-  grep -Ec '\b(if|elif|for|while|case)\b|&&|\|\|' "$1" 2>/dev/null || echo 0
+  # grep -c prints the count AND exits 1 when it is zero; keep exactly one
+  # integer on stdout and never let the non-zero exit trip set -e.
+  local n
+  n="$(grep -Ec '\b(if|elif|for|while|case)\b|&&|\|\|' "$1" 2>/dev/null || true)"
+  echo "${n:-0}"
 }
 
 score=0

@@ -106,6 +106,25 @@
         (let [score (some->> (output a) (re-find #"(?m)^crap: score=(\d+)") second parse-long)]
           (is (and score (pos? score)) "branchy code must score above zero"))))))
 
+(deftest crap-clean-file-scores-zero-without-noise
+  (testing "a zero-match file must score exactly 0 and emit no arithmetic noise"
+    (let [d (clean-repo)
+          res (run crap d {} "sut.sh")]
+      (is (passes? res))
+      (is (re-find #"(?m)^crap: score=0\b" (output res)))
+      (is (not (str/includes? (output res) "syntax error"))
+          (str "the wrapper must not leak grep/arith errors on a zero-match file:\n" (output res))))))
+
+(deftest crap-sums-across-files-including-zero-match-ones
+  (testing "mixing a zero-match file with a branchy one must sum correctly, no noise"
+    (let [d (tmp-dir)]
+      (write-file (fs/path d "a.sh") "#!/usr/bin/env bash\necho hi\n")
+      (write-file (fs/path d "b.sh") "#!/usr/bin/env bash\nif true; then echo x; fi\n")
+      (let [res (run crap d {} "a.sh" "b.sh")]
+        (is (passes? res) (output res))
+        (is (re-find #"(?m)^crap: score=1\b" (output res)) "0 + 1 = 1")
+        (is (not (str/includes? (output res) "syntax error")))))))
+
 ;; --- DRY wrapper ---------------------------------------------------------
 
 (deftest dry-passes-on-non-duplicated-code
