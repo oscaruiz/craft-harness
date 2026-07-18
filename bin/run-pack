@@ -113,14 +113,42 @@ header() { sed -n "/^\$/q; s/^$2: //p" "$1" | head -1; }  # <file> <field>
 now_s() { date +%s; }
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+PROMPTS_DIR="$OUT/prompts"
+mkdir -p "$PROMPTS_DIR"
+
+write_instruction() { # <role>: the initial user prompt that kicks off the turn.
+  # Upstream's launcher passes a "read the constitution, read your role, obey"
+  # instruction as the user prompt while the role prompt goes in as the system
+  # prompt; we mirror that and add the task pointer so a real agent knows where
+  # the work is. (The test fake dispatches on $SWARMFORGE_ROLE and ignores this
+  # text entirely, so it is inert for the suite.)
+  local role="$1" f="$PROMPTS_DIR/$role.instruction"
+  cat > "$f" <<EOF
+You are running as the SwarmForge "$role" in an automated two-pack session.
+
+1. Read swarmforge/constitution.prompt and every file it references, and obey them.
+2. Read swarmforge/roles/$role.prompt and follow it.
+3. The task specification is in task.md at the repository root — read it before acting.
+
+Do your role's next step now and commit your work on the current git branch (do
+not switch branches). Quality gates are the crap.sh and dry.sh wrappers only;
+never invoke a language tool or any mutation testing directly. When your step is
+complete, create your handoff with the swarm_handoff.sh helper exactly as your
+role and the constitution require. This is an unattended run: do not ask for
+confirmation, and do not wait for further input beyond handoff wake-ups.
+EOF
+  printf '%s' "$f"
+}
+
 launch_string() { # <role>: faithful claude Mode-2 launch + tools/toy on PATH
   local role="$1"
-  local prompt="$PROJECT/swarmforge/roles/$role.prompt"
+  local sysprompt="$PROJECT/swarmforge/roles/$role.prompt"
+  local userprompt; userprompt="$(write_instruction "$role")"
   # PATH order: our toy wrappers (crap.sh/dry.sh), then the pack's upstream
   # helpers (swarm_handoff.sh/ready_for_next.sh — how a real agent hands off and
   # consumes), then run-pack's own PATH (the intended claude), then inherited.
   printf "export SWARMFORGE_ROLE=%q && export PATH=%q:%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
-    "$role" "$FORK_ROOT/tools/toy" "$PROJECT/swarmforge/scripts" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$prompt" "SwarmForge $role" "$prompt"
+    "$role" "$FORK_ROOT/tools/toy" "$PROJECT/swarmforge/scripts" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$sysprompt" "SwarmForge $role" "$userprompt"
 }
 
 capture_panes() {

@@ -180,6 +180,42 @@ Consequence for later milestones: faithful worktree-per-role and use of the
 upstream `handoffd.bb` are deferred until a pack actually needs parallel roles
 (six-pack) or the solo-pack defines its own session state (m4, per D6).
 
+## D12 — Interactive Mode 2 needs a tool-permission envelope; `acceptEdits` alone stalls unattended (2026-07-18, m3)
+
+The first B6 real run cleared the workspace-trust gate (owner pre-set
+`hasTrustDialogAccepted` for the throwaway project, keeping the D2-certified
+`--permission-mode acceptEdits`) but stalled immediately. Real Claude Code under
+`acceptEdits` auto-approves file **edits only**: every Bash/env command the pack
+needs (`git`, `./test.sh`, `crap.sh`, `swarm_handoff.sh`, `ready_for_next.sh`)
+raises an interactive "This command requires approval" prompt. Nothing answers
+it in an unattended run, so **both** roles blocked before doing any work — no
+commit, `sut.sh` untouched. The run was stopped early (near-zero spend) rather
+than idling to the session-timeout breaker. Pane evidence captured.
+
+Finding: the adapter CONTRACT's Mode 2 — and the whole m2 certification — pinned
+only the permission **mode**, never the tool-permission **envelope**. The fakes
+never exposed this because they are not Claude and never prompt. D2's containment
+layer ("the CLI's permission configuration") is therefore under-specified for a
+real unattended agent: it must also declare which tools are pre-authorized.
+
+Resolution (**pending owner decision** — the standing "no retries" bars an
+autonomous re-fire; both options need a fresh owner-authorized run):
+
+- **(A, recommended, faithful)** a scoped `allowedTools` allowlist for the
+  throwaway project covering the pack's tools (Bash for
+  git/test.sh/crap.sh/dry.sh/swarm_handoff.sh/ready_for_next.sh; Edit/Write for
+  sut.sh), keeping `acceptEdits`. This IS the D2 containment made explicit —
+  arguably more faithful than the m2 contract, and aligned with R9's "permission
+  envelope". The chosen envelope should be recorded in `adapters/CONTRACT.md`.
+- **(B)** `--permission-mode bypassPermissions` (`--dangerously-skip-permissions`):
+  fully unattended, blanket bypass, least faithful to D2's scoped containment.
+
+Everything up to this gate is proven: trust cleared, real claude launched under
+the faithful invocation, read the instruction/constitution, and began working in
+the correct workdir — it is only the tool-approval prompt that blocks. run-pack,
+the wrappers, the inspector and the breakers are all validated (fake dry-run
+through the real project layout is inspector-green).
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
