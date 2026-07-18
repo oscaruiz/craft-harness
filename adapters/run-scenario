@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# craft-harness run-scenario — milestone 2: executes the canonical
+# adapter-certification scenario (edit → test → commit → handoff → wake-up,
+# design v2.2 R1) against one adapter. See adapters/CONTRACT.md.
+#
+#   run-scenario --adapter <name-or-dir> --out <dir> [--phase-timeout <sec>]
+#
+# --adapter resolves a contract directory: a path (anything with a slash, or
+# an existing directory) is used as-is — that is how the test suite plugs in
+# fake agents; a bare name resolves to <fork>/adapters/<name>. The directory
+# must contain the two contract executables, `invoke` and `info`.
+set -euo pipefail
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+die() { echo "run-scenario: $*" >&2; exit 1; }
+
+usage() {
+  echo "usage: run-scenario --adapter <name-or-dir> --out <dir> [--phase-timeout <sec>]" >&2
+  exit 2
+}
+
+ADAPTER=""
+OUT=""
+PHASE_TIMEOUT=300
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --adapter) ADAPTER="${2:-}"; shift 2 ;;
+    --out) OUT="${2:-}"; shift 2 ;;
+    --phase-timeout) PHASE_TIMEOUT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$ADAPTER" && -n "$OUT" ]] || usage
+[[ "$PHASE_TIMEOUT" =~ ^[0-9]+$ ]] || usage
+
+# --- adapter resolution (behavior B3) -------------------------------------
+
+case "$ADAPTER" in
+  */*) ADAPTER_DIR="$ADAPTER" ;;
+  *) if [[ -d "$ADAPTER" ]]; then
+       ADAPTER_DIR="$ADAPTER"
+     else
+       ADAPTER_DIR="$FORK_ROOT/adapters/$ADAPTER"
+     fi ;;
+esac
+[[ -d "$ADAPTER_DIR" ]] \
+  || die "adapter '$ADAPTER' not found: no directory at $ADAPTER_DIR (see adapters/CONTRACT.md)"
+for exe in invoke info; do
+  [[ -f "$ADAPTER_DIR/$exe" ]] \
+    || die "adapter '$ADAPTER': missing contract executable '$exe' in $ADAPTER_DIR"
+  [[ -x "$ADAPTER_DIR/$exe" ]] \
+    || die "adapter '$ADAPTER': '$exe' in $ADAPTER_DIR is not executable"
+done
+
+# --- orchestration (behavior B4) ------------------------------------------
+
+die "scenario orchestration not implemented yet (milestone 2, behavior B4)"
