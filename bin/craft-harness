@@ -118,11 +118,42 @@ prune_stores() { # drop stores no longer referenced by current
   done
 }
 
+# --- session state (decisions.md D6: probe the upstream plumbing) ---------
+
+detect_in_flight() { # prints a reason and returns 0 either way; empty = idle
+  local p="$1"
+  if compgen -G "$p/.worktrees/*" >/dev/null 2>&1; then
+    printf 'agent worktree(s) under .worktrees/'
+    return 0
+  fi
+  local hb="$p/.swarmforge/handoffs"
+  if compgen -G "$hb/inbox/new/*" >/dev/null 2>&1; then
+    printf 'unconsumed handoff(s) in .swarmforge/handoffs/inbox/new/'
+    return 0
+  fi
+  if compgen -G "$hb/inbox/in_process/*" >/dev/null 2>&1; then
+    printf 'half-processed handoff(s) in .swarmforge/handoffs/inbox/in_process/'
+    return 0
+  fi
+  if compgen -G "$hb/outbox/*" >/dev/null 2>&1; then
+    printf 'unsent handoff(s) in .swarmforge/handoffs/outbox/'
+    return 0
+  fi
+  return 0
+}
+
+refuse_if_in_flight() { # <project> <verb>
+  local reason
+  reason="$(detect_in_flight "$1")"
+  [[ -z "$reason" ]] || die "refusing to $2: in-flight session detected — $reason"
+}
+
 # --- subcommands ----------------------------------------------------------
 
 run_cmd() {
   [[ -n "$PROJECT" && -n "$PACK" ]] || die "run requires --project <path> and --pack <branch>"
   [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+  refuse_if_in_flight "$PROJECT" "run"
   [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: the launcher refuses to start without an approved task.md"
   local commit
   commit="$(git -C "$FORK_ROOT" rev-parse --verify --quiet "$PACK^{commit}")" \
@@ -140,8 +171,47 @@ upgrade_cmd() {
   die "upgrade: not implemented yet"
 }
 
+# Exit codes are part of the contract (run/upgrade compose over them):
+# 0 healthy · 10 outdated · 20 managed file modified · 30 session in flight.
 doctor_cmd() {
-  die "doctor: not implemented yet"
+  [[ -n "$PROJECT" ]] || die "doctor requires --project <path>"
+  local state="$PROJECT/.craft-harness"
+  [[ -L "$state/current" ]] || die "project not initialized (no .craft-harness/current) — use 'craft-harness run'"
+  local reason
+  reason="$(detect_in_flight "$PROJECT")"
+  if [[ -n "$reason" ]]; then
+    echo "session in-flight: $reason"
+    exit 30
+  fi
+  local installed entries e
+  installed="$(cat "$PROJECT/.craft-harness-version")"
+  entries="$(manifest_entries)"
+  local modified=()
+  while read -r e; do
+    if ! git -C "$FORK_ROOT" show "$installed:$e" 2>/dev/null \
+        | cmp -s - "$PROJECT/$e"; then
+      modified+=("$e")
+    fi
+  done <<< "$entries"
+  if [[ -f "$PROJECT/.git/hooks/pre-commit" ]]; then
+    if ! git -C "$FORK_ROOT" show "$installed:hooks/pre-commit" 2>/dev/null \
+        | cmp -s - "$PROJECT/.git/hooks/pre-commit"; then
+      modified+=(".git/hooks/pre-commit")
+    fi
+  fi
+  if (( ${#modified[@]} > 0 )); then
+    echo "managed file(s) locally modified: ${modified[*]}"
+    exit 20
+  fi
+  local pack tip
+  pack="$(cat "$state/pack")"
+  tip="$(git -C "$FORK_ROOT" rev-parse "$pack")"
+  if [[ "$installed" != "$tip" ]]; then
+    echo "outdated: installed $installed, fork pack '$pack' is at $tip"
+    exit 10
+  fi
+  echo "healthy: $installed (pack '$pack')"
+  exit 0
 }
 
 # --- dispatch -------------------------------------------------------------
