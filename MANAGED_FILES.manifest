@@ -1,0 +1,9 @@
+# MANAGED_FILES.manifest — the explicit inventory of paths bin/craft-harness
+# materializes into a project (from the pack branch) and replaces atomically
+# on upgrade. Nothing outside this list is ever touched, apart from the
+# launcher's own state under .craft-harness/, the .craft-harness-version
+# pointer, and the hook installed at .git/hooks/pre-commit.
+swarmforge/constitution/articles/engineering.prompt
+swarmforge/constitution/articles/handoffs.prompt
+swarmforge/constitution/articles/workflow.prompt
+hooks/pre-commit
