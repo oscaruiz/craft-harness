@@ -1,0 +1,31 @@
+id: 20260718T195143072546853Z_verify
+from: verify
+to: done
+phase: verify
+created_at: 2026-07-18T19:51:43Z
+
+# done
+- Ran `./test.sh` in a clean checkout of the candidate commit; it exits 0.
+- Verified all four @-tagged scenarios from `spec/features/sut_output.feature`:
+  - @SUT-1 (sut.sh prints 42 to stdout): `bash ./sut.sh` captured value is exactly `42` — PASS.
+  - @SUT-2 (running sut.sh succeeds): `bash ./sut.sh` exits with status 0 — PASS.
+  - @SUT-3 (the test harness passes): `./test.sh` exits 0 — PASS.
+  - @SUT-4 (output has no extra content): stdout captured via command substitution equals `42` with no leading/trailing whitespace or extra lines — PASS.
+- Confirmed the diff (`diff.patch`) touches only `sut.sh` (one line: `echo broken` -> `echo 42`); no changes to `task.md`, `test.sh`, `adapters/`, or the constitution, consistent with spec out-of-scope constraints.
+- Did not modify any code and did not commit.
+
+# decisions
+- Made no code changes and no commit — verification only, so this section records no mutating choices.
+
+# assumptions
+- The verify-workdir checkout corresponds to the candidate commit under review (code handoff references commit 842449f, matching current branch state).
+- Trailing newline from `echo` is acceptable because `test.sh` captures stdout via command substitution, which strips it (per spec R2 and confirmed by the passing captured value `[42]`).
+
+# open items
+- none
+
+# commands executed
+- `./test.sh` (exit 0)
+- `out="$(bash ./sut.sh)"; [[ "$out" == "42" ]]` (captured `42`, match)
+- `bash ./sut.sh >/dev/null; echo $?` (exit 0)
+- `cat "$SOLO_DIFF"` (confirmed only sut.sh changed)

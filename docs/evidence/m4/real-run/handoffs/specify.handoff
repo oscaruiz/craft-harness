@@ -1,0 +1,27 @@
+id: 20260718T191813900674365Z_specify
+from: specify
+to: code
+phase: specify
+created_at: 2026-07-18T19:18:13Z
+
+# done
+- Read task.md, sut.sh, and test.sh to understand the requirement.
+- Wrote spec.md to $SOLO_SPEC_DIR describing the required behavior of sut.sh and the test harness.
+- Wrote features/sut_output.feature with four documental Gherkin scenarios, each tagged with a scenario ID (@SUT-1 through @SUT-4).
+- Did not write production code and did not commit anything.
+
+# decisions
+- Modeled four scenarios (@SUT-1..@SUT-4) covering: exact stdout of "42", successful exit status, the end-to-end test.sh passing, and no extra/whitespace content surviving command substitution — because test.sh uses `set -euo pipefail` and `[[ "$(bash ./sut.sh)" == "42" ]]`, so both output content and exit behavior matter.
+- Kept the spec explicit that sut.sh is the only file to change, honoring task.md's edit restrictions (task.md, test.sh, adapters/, constitution are off-limits).
+
+# assumptions
+- A trailing newline from `echo 42` is acceptable because command substitution strips trailing newlines; the assertion compares against "42".
+- "documental Gherkin" means human-readable feature files describing behavior, not executable step definitions.
+- The constitution referenced in task.md is a project governance file that must not be edited; no such file needed changes for the spec.
+
+# open items
+- Implementation phase: change sut.sh to print 42 (e.g. `echo 42`) and confirm `./test.sh` exits 0.
+
+# commands executed
+- echo "SOLO_SPEC_DIR=$SOLO_SPEC_DIR" && echo "SOLO_HANDOFF=$SOLO_HANDOFF" && ls -la
+- cat sut.sh; echo "---"; cat test.sh

@@ -1,0 +1,16 @@
+PHASE: verify
+
+You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and carry no prior transcript. Inputs available to you: the approved spec under $SOLO_SPEC_DIR, the diff at $SOLO_DIFF, and the prior handoffs under $SOLO_HANDOFFS_DIR. Run ./test.sh and check that each @-tagged scenario ID from the spec's feature files is satisfied; name those scenario IDs in your handoff. Do NOT modify code and do NOT commit. Write your handoff to the file named by the environment variable $SOLO_HANDOFF. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+
+# done
+- <what this phase actually accomplished>
+# decisions
+- <choices you made and why — this MUST be non-empty if you changed or committed anything>
+# assumptions
+- <what you took for granted>
+# open items
+- <unresolved items for a later phase, or '- none'>
+# commands executed
+- <the commands you ran>
+
+Every section must be present. Use bullet lines under each heading.

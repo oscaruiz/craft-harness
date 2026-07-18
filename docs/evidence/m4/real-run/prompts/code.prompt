@@ -1,0 +1,16 @@
+PHASE: code
+
+Implement the approved specification found under $SOLO_SPEC_DIR (spec.md and the feature files) against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches, do not touch task.md or test.sh). Run the quality gates through the wrappers at the paths in the environment variables $CRAFT_CRAP and $CRAFT_DRY, invoked by their absolute path on your changed files (e.g. "$CRAFT_CRAP" sut.sh and "$CRAFT_DRY" sut.sh) — use ONLY these wrappers, never a language quality tool directly and never any mutation testing. Write your handoff to the file named by the environment variable $SOLO_HANDOFF. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+
+# done
+- <what this phase actually accomplished>
+# decisions
+- <choices you made and why — this MUST be non-empty if you changed or committed anything>
+# assumptions
+- <what you took for granted>
+# open items
+- <unresolved items for a later phase, or '- none'>
+# commands executed
+- <the commands you ran>
+
+Every section must be present. Use bullet lines under each heading.

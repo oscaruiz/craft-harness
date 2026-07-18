@@ -1,0 +1,15 @@
+Specification phase complete.
+
+**What I produced** (all under `$SOLO_SPEC_DIR`, no production code, nothing committed):
+
+- **`spec/spec.md`** — Specifies that `bash ./sut.sh` must print exactly `42` to stdout with successful exit, so `test.sh` (which asserts `[[ "$(bash ./sut.sh)" == "42" ]]` under `set -euo pipefail`) exits 0. Notes the read-only constraints from `task.md` (`task.md`, `test.sh`, `adapters/`, constitution).
+
+- **`spec/features/sut_output.feature`** — Four documental Gherkin scenarios, each tagged:
+  - `@SUT-1` — sut.sh prints `42` to stdout
+  - `@SUT-2` — running sut.sh exits 0
+  - `@SUT-3` — end-to-end `./test.sh` exits 0
+  - `@SUT-4` — no extra/whitespace content survives command substitution
+
+- **Handoff** written to `$SOLO_HANDOFF` with all five required sections.
+
+The implementation phase just needs to change `sut.sh` from `echo broken` to `echo 42`.

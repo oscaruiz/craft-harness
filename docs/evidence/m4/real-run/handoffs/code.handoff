@@ -1,0 +1,29 @@
+id: 20260718T195057541306380Z_code
+from: code
+to: verify
+phase: code
+created_at: 2026-07-18T19:50:57Z
+commit: 842449f916
+
+# done
+- Changed `sut.sh` to `echo 42` (was `echo broken`) so `bash ./sut.sh` prints exactly `42`.
+- Verified `./test.sh` exits 0.
+- Ran both quality gates on the changed file: crap.sh (score=0, pass) and dry.sh (score=0, pass).
+- Committed the change on the current branch `main` as commit 842449f.
+
+# decisions
+- Used `echo 42` (single line, no extra output) to satisfy R1/R2/R4 — matches the spec's requirement of exactly `42` with the trailing newline stripped by command substitution.
+- Made a minimal one-line edit rather than rewriting the script, keeping it a plain bash script per the "no new dependencies" out-of-scope constraint.
+
+# assumptions
+- Only `sut.sh` was to be modified; `task.md`, `test.sh`, and the (absent) `adapters/`/constitution were left untouched.
+- The trailing newline from `echo` is acceptable because `test.sh` captures via command substitution, which strips it (confirmed by spec and by a passing `./test.sh`).
+
+# open items
+- none
+
+# commands executed
+- `./test.sh` (exit 0)
+- `"$CRAFT_CRAP" sut.sh` (result=pass)
+- `"$CRAFT_DRY" sut.sh` (result=pass)
+- `git add sut.sh && git commit -m "Fix sut.sh to print 42 so test.sh passes"`

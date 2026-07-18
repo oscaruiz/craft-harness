@@ -1,0 +1,7 @@
+Done. Summary:
+
+- **Change**: `sut.sh` now runs `echo 42` (was `echo broken`).
+- **Test**: `./test.sh` exits 0.
+- **Quality gates**: `$CRAFT_CRAP sut.sh` → pass (score=0), `$CRAFT_DRY sut.sh` → pass (score=0).
+- **Commit**: `842449f` on branch `main`.
+- **Handoff**: written to `$SOLO_HANDOFF` with all five required sections.

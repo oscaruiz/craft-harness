@@ -1,0 +1,35 @@
+{
+  "adapter" : "claude-code",
+  "phase_timeout_s" : 400,
+  "enforced_branch" : "main",
+  "adapter_info" : "claude 2.1.214 (Claude Code)",
+  "run_timeout_s" : "1200",
+  "outcome" : "success",
+  "retry_cap" : "1",
+  "phases" : [ {
+    "name" : "specify",
+    "duration_s" : 44,
+    "outcome" : "ok"
+  }, {
+    "name" : "code",
+    "duration_s" : 190,
+    "outcome" : "ok"
+  }, {
+    "name" : "verify",
+    "duration_s" : 41,
+    "outcome" : "ok"
+  }, {
+    "name" : "code",
+    "duration_s" : 50,
+    "outcome" : "ok"
+  }, {
+    "name" : "verify",
+    "duration_s" : 46,
+    "outcome" : "ok"
+  } ],
+  "project" : "/tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m4-real/project",
+  "baseline_commit" : "b74c9cf1d2b0826775ac42e74f619be0bf2041e6",
+  "candidate_commit" : "842449f91689cb86ce8ebca4f2bed966c479f7ad",
+  "pack" : "solo-pack",
+  "fork_commit" : "292ef29bafa0144a8f4e66ba402a4b1d4865f5c1"
+}

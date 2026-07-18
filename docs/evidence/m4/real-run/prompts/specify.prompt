@@ -1,0 +1,16 @@
+PHASE: specify
+
+Read task.md at the repository root and inspect the code it refers to. Produce a specification: write spec.md, and write documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on EACH scenario, all under the directory named by the environment variable $SOLO_SPEC_DIR. Do NOT write production code and do NOT commit anything. Write your handoff to the file named by the environment variable $SOLO_HANDOFF. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+
+# done
+- <what this phase actually accomplished>
+# decisions
+- <choices you made and why — this MUST be non-empty if you changed or committed anything>
+# assumptions
+- <what you took for granted>
+# open items
+- <unresolved items for a later phase, or '- none'>
+# commands executed
+- <the commands you ran>
+
+Every section must be present. Use bullet lines under each heading.

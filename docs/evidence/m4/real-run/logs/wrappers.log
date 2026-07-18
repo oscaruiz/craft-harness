@@ -1,0 +1,8 @@
+crap: score=0
+crap: threshold=6
+crap: offenders=none
+crap: result=pass
+dry: score=0
+dry: threshold=0
+dry: offenders=none
+dry: result=pass

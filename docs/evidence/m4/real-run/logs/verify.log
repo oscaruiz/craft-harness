@@ -1,0 +1,8 @@
+Verification complete. `./test.sh` exits 0 and all four @-tagged scenarios are satisfied:
+
+- **@SUT-1** — `bash ./sut.sh` prints exactly `42`
+- **@SUT-2** — `bash ./sut.sh` exits 0
+- **@SUT-3** — `./test.sh` exits 0
+- **@SUT-4** — captured stdout equals `42` with no extra whitespace/lines
+
+The diff touches only `sut.sh` (`echo broken` → `echo 42`), respecting all out-of-scope constraints. No code was modified and nothing was committed. Handoff written to `verify.handoff`.
