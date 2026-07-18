@@ -105,6 +105,18 @@ Consequences:
   genericity claim is **OPEN until D8 clears** (the Codex run lands). Claude
   Code as the primary/verified backend is unaffected.
 
+**Amendment (2026-07-18, m3 — owner ruling).** D8 is **downgraded from an m3
+merge-blocker to a v0.1 exit item.** The native Linux `codex` is still absent in
+the reference WSL environment (the only `codex` on PATH remains the Windows
+interop shim, which D4 disqualifies), and blocking the m3 merge on unavailable
+tooling buys nothing: the two-pack-lite pipeline, its breakers, and the star
+negative asserts are all Claude-Code evidence and do not depend on Codex. The
+owner ruled to let m3 merge without the paid Codex run. What is unchanged: the
+Codex certification is still OWED before v0.1 ships, and **R1 genericity stays
+OPEN** until it lands. m4's `docs/current-milestone.md` records the same:
+"D8 (codex) is a v0.1 exit item; it does not block this milestone." This is a
+sequencing change only — no scope is dropped, only deferred.
+
 ## D9 — Faithful tmux mode is default shell in the window + zsh helpers as shebang subprocesses (2026-07-18, m3)
 
 Certifying the interactive window mode (B1, `bin/smoke-tmux`) surfaced a real

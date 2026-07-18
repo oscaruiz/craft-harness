@@ -58,7 +58,10 @@ evidence. Reference: `docs/design-v2.2.md` §1 (R3, R6, R9, R10), §5, §7.3.
   `task.md`; breaker kills a session exceeding the wake-up cap.
 - Real-run evidence in `docs/evidence/m3/` with the inspector green:
   mutation never invoked, threshold 6 executed, R6 exercised.
-- D8 cleared (codex log in `docs/evidence/m2/`) before merge.
+- ~~D8 cleared (codex log in `docs/evidence/m2/`) before merge.~~ **Amended
+  (see `docs/decisions.md` D8 amendment):** D8 is downgraded to a v0.1 exit
+  item and no longer blocks the m3 merge. R1 genericity stays OPEN until the
+  Codex run lands.
 
 ## Out of scope for milestone 3
 solo-pack (m4) · real language toolchains (m5–6) · six-pack · long-running
