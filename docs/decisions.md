@@ -357,8 +357,16 @@ owned-path contract exists yet (see the mechanism finding below), this fix must
 `owns:`/`paths:` field the pack or `project.prompt` declares, enforced by run-solo
 and ideally mirrored as an allowlist in the R9 pre-commit hook.
 
-Status: OPEN. To be fixed in a separate craft-harness session before the value
-checkpoint is treated as measuring a sound harness. Recorded per owner's request.
+Status: **CLOSED (2026-07-19, m4.5)** by D19's owned-path contract. The
+machine-readable `owns:` set (bin/parse-owns) now scopes the candidate commit:
+run-solo fails the run before verify if the commit touches anything outside the
+owned set (naming the paths), and the pre-commit hook enforces the same
+allowlist. Negative verification is green — the planted out-of-scope test
+(`planted-out-of-scope-file-turns-the-run-red`) turns the run red, and the exact
+myCQRS condition (unrelated dirt present, scoped agent commits only owned paths)
+passes (`dirty-tree-does-not-contaminate-the-candidate-commit`). myCQRS's
+project.prompt now declares `owns: src/core/**`. Original defect recorded per
+owner's request; see D19 for the design.
 
 ## D18 — CRLF working-tree pollution on myCQRS is the D5 family, working-tree only (2026-07-18, value checkpoint)
 
