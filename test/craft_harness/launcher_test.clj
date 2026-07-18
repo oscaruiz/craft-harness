@@ -255,6 +255,26 @@
     (doseq [e (manifest-entries fork)]
       (is (fs/exists? (fs/path toy e)) (str e " must be materialized")))))
 
+(deftest run-keeps-project-git-history-clean
+  (let [fork (make-fork!)
+        toy (make-toy!)]
+    (install! fork toy)
+    (testing "git status shows only the versioned footprint"
+      (let [lines (->> (git! toy "status" "--porcelain")
+                       :out
+                       str/split-lines
+                       (remove str/blank?))]
+        (is (= ["?? .craft-harness-version"] lines)
+            "after run, only .craft-harness-version may appear (task.md is already committed; materialized paths must be ignored)")))
+    (testing "materialized paths are gitignored by the launcher itself"
+      (doseq [path (conj (vec (manifest-entries fork)) ".craft-harness")]
+        (is (= 0 (:exit (sh-run {:dir toy :ok? false} "git" "check-ignore" "-q" path)))
+            (str path " must be ignored by the launcher-managed excludes"))))
+    (testing "the versioned footprint is NOT ignored"
+      (doseq [path ["task.md" ".craft-harness-version"]]
+        (is (= 1 (:exit (sh-run {:dir toy :ok? false} "git" "check-ignore" "-q" path)))
+            (str path " must stay visible to git"))))))
+
 (deftest upgrade-refuses-over-in-flight-session
   (let [fork (make-fork!)
         toy (make-toy!)]

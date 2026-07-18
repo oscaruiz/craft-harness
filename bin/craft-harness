@@ -106,6 +106,26 @@ install_hook() { # executable copy: must survive `git clean` in the project
   chmod +x "$project/.git/hooks/pre-commit"
 }
 
+ensure_exclude_line() { # append a line to a file unless already present
+  grep -qxF "$1" "$2" 2>/dev/null || printf '%s\n' "$1" >> "$2"
+}
+
+ensure_excludes() { # keep materialized paths out of the project's git history
+  # (design v2.2 §2: the versioned footprint is project.prompt, task.md and
+  # .craft-harness-version — everything materialized is launcher-owned).
+  # Written to .git/info/exclude so the project's own .gitignore is untouched.
+  local project="$1"
+  local exclude="$project/.git/info/exclude"
+  local e entries
+  entries="$(manifest_entries)"
+  mkdir -p "$project/.git/info"
+  touch "$exclude"
+  while read -r e; do
+    ensure_exclude_line "/$e" "$exclude"
+  done <<< "$entries"
+  ensure_exclude_line "/.craft-harness/" "$exclude"
+}
+
 prune_stores() { # drop stores no longer referenced by current
   local state="$1/.craft-harness"
   local live d
@@ -163,6 +183,7 @@ run_cmd() {
   git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$PROJECT/.craft-harness/branch"
   ensure_links "$PROJECT"
   install_hook "$PROJECT"
+  ensure_excludes "$PROJECT"
   prune_stores "$PROJECT"
   echo "craft-harness: installed $commit (pack '$PACK') into $PROJECT"
 }
@@ -179,6 +200,7 @@ upgrade_cmd() {
   install_tree "$PROJECT" "$commit"
   ensure_links "$PROJECT"
   install_hook "$PROJECT"
+  ensure_excludes "$PROJECT"
   prune_stores "$PROJECT"
   echo "craft-harness: upgraded $PROJECT to $commit (pack '$pack')"
 }
