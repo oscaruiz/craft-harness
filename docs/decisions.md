@@ -357,8 +357,16 @@ owned-path contract exists yet (see the mechanism finding below), this fix must
 `owns:`/`paths:` field the pack or `project.prompt` declares, enforced by run-solo
 and ideally mirrored as an allowlist in the R9 pre-commit hook.
 
-Status: OPEN. To be fixed in a separate craft-harness session before the value
-checkpoint is treated as measuring a sound harness. Recorded per owner's request.
+Status: **CLOSED (2026-07-19, m4.5)** by D19's owned-path contract. The
+machine-readable `owns:` set (bin/parse-owns) now scopes the candidate commit:
+run-solo fails the run before verify if the commit touches anything outside the
+owned set (naming the paths), and the pre-commit hook enforces the same
+allowlist. Negative verification is green — the planted out-of-scope test
+(`planted-out-of-scope-file-turns-the-run-red`) turns the run red, and the exact
+myCQRS condition (unrelated dirt present, scoped agent commits only owned paths)
+passes (`dirty-tree-does-not-contaminate-the-candidate-commit`). myCQRS's
+project.prompt now declares `owns: src/core/**`. Original defect recorded per
+owner's request; see D19 for the design.
 
 ## D18 — CRLF working-tree pollution on myCQRS is the D5 family, working-tree only (2026-07-18, value checkpoint)
 
@@ -378,6 +386,59 @@ add its own `.gitattributes` with `* text=auto eol=lf` and renormalize once,
 mirroring D5. Until then a clean baseline needs the working-tree CRLF changes
 discarded — a working-tree reset that belongs to the owner, not the harness. No
 craft-harness code change follows from this note.
+
+## D19 — The owned-path contract: a strict `owns:` block in project.prompt, enforced at two points (2026-07-19, m4.5)
+
+Closes the executable-contract half of D17 (the defect stays OPEN until this
+lands and its negative test is green). D17 found that "work only inside
+`src/core`" was prose fed to the agent, parsed by no executable code, so a dirty
+tree or an `git add -A` agent could contaminate the candidate commit the
+verifier (R4) then judges. Two design decisions were owed; both are recorded
+here before implementation, per CLAUDE.md.
+
+**1. Where owned paths are declared — a strict `owns:` block in project.prompt.**
+Scope is a per-project property, and design §2 already names `project.prompt`
+as part of the versioned per-project footprint, so that is its home. This gives
+`project.prompt` its **first machine-readable field**. To avoid parsing prose as
+config, the format is deliberately narrow and the parser (`bin/parse-owns`) is
+strict:
+
+- The block is a line `owns:` at column 0 (no inline value), followed by
+  one glob per **indented** line. A blank line or a dedent to column 0 ends the
+  block. Prose anywhere else in the file is ignored.
+- Each entry must be a single whitespace-free token, **relative** (no leading
+  `/`), with **no `..`** traversal. A glob uses shell `[[ == ]]` semantics where
+  `*` spans `/`, so `src/core/**` means "anything under src/core/".
+- **Missing file or no `owns:` block ⇒ no allowlist** (empty output, exit 0) —
+  existing packs and the toy projects are unaffected (backward compatible).
+- A **malformed** block (inline value after `owns:`, an empty block, an entry
+  with whitespace / a leading `/` / `..`, a duplicate `owns:`) fails **loudly**
+  (exit 1, naming the problem). The contract is fail-closed: an unreadable
+  contract is a stop, not a silent skip.
+
+**2. Enforcement points — both, not either (defence in depth, per D2).**
+
+- **run-solo (candidate-commit scope check).** After the code phase, run-solo
+  computes the candidate commit's touched paths (`git diff --name-only
+  baseline candidate`) and fails the run **before verify**, naming the offending
+  paths, if any path is outside the owns-set. We chose **fail-and-name** over
+  silently re-scoping the commit: run-solo does not author the commit (the agent
+  does — that is the D17 root), so re-committing would mean rewriting the agent's
+  work; failing with attribution is the executable control the negative test
+  needs and keeps the agent's commit authoritative. No owns-set ⇒ no check.
+- **pre-commit hook (allowlist mode).** Upgraded from blacklist-only: when
+  project.prompt declares an owns-set, staged paths outside it are refused too
+  (the blacklist still runs first). So a bypassed hook is caught by run-solo, and
+  a bypassed run-solo is caught by the hook (D2's layering). A malformed contract
+  makes the hook refuse the commit (fail-closed), same as run-solo.
+
+**One parser, guarded against drift.** `bin/parse-owns` is the canonical parser
+(used by run-solo). The hook is a self-contained copy installed under
+`.git/hooks/`, so it embeds an identical `parse_owns()` and exposes a
+`--parse-owns <file>` escape hatch used only by a consistency test that feeds a
+battery of fixtures to both and asserts identical (stdout, exit) — the same
+anti-drift pattern as the blacklist/inspect-run guard. Git never passes args to
+the hook, so the escape hatch is inert in normal operation.
 
 ## Known-flaky tests
 

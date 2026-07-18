@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# craft-harness parse-owns — milestone 4.5 (D17/D19). The ONE machine-readable
+# owned-path contract: it reads the strict `owns:` block from a project.prompt
+# file and prints the glob allowlist (one per line) on stdout.
+#
+#   parse-owns <project.prompt>
+#
+# Contract (D19):
+#   · The block is a line `owns:` at column 0 with NO inline value, followed by
+#     one glob per INDENTED line. A blank line or a dedent to column 0 ends it.
+#     Prose anywhere else in the file is ignored.
+#   · Each entry is a single whitespace-free token, RELATIVE (no leading '/'),
+#     with no '..' traversal.
+#   · Missing file or no owns: block ⇒ empty output, exit 0 (no allowlist —
+#     existing packs and toy projects are unaffected; backward compatible).
+#   · A malformed block ⇒ exit 1 with a message naming the problem (fail-closed:
+#     an unreadable contract is a stop, not a silent skip).
+#
+# KEEP THE parse_owns() BODY BELOW IN SYNC WITH hooks/pre-commit — the hook
+# embeds an identical copy for its allowlist mode, guarded against drift by the
+# test owns-parser-matches-between-parse-owns-and-hook.
+set -euo pipefail
+
+# --- parse_owns <file> : emit globs on stdout; return 1 (message on stderr) on
+# a malformed block; a missing file is "no allowlist" (empty, return 0). --------
+parse_owns() {
+  local f="$1" line glob in_block=0 seen_block=0 count=0
+  [[ -f "$f" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_block" -eq 1 ]]; then
+      if [[ -z "${line//[[:space:]]/}" ]]; then in_block=0; continue; fi   # blank ends block
+      if [[ "$line" == [![:space:]]* ]]; then in_block=0; fi               # dedent ends block, re-evaluate below
+    fi
+    if [[ "$in_block" -eq 1 ]]; then
+      glob="$line"
+      glob="${glob#"${glob%%[![:space:]]*}"}"   # ltrim
+      glob="${glob%"${glob##*[![:space:]]}"}"    # rtrim
+      [[ -n "$glob" ]] || continue
+      if [[ "$glob" == *[[:space:]]* ]]; then
+        echo "parse-owns: owns entry must be a single token (embedded whitespace): '$glob'" >&2; return 1; fi
+      if [[ "$glob" == /* ]]; then
+        echo "parse-owns: owns entry must be relative, not absolute: '$glob'" >&2; return 1; fi
+      if [[ "$glob" == *..* ]]; then
+        echo "parse-owns: owns entry must not contain '..': '$glob'" >&2; return 1; fi
+      printf '%s\n' "$glob"
+      count=$(( count + 1 ))
+      continue
+    fi
+    if [[ "$line" =~ ^owns:[[:space:]]*$ ]]; then
+      if [[ "$seen_block" -eq 1 ]]; then echo "parse-owns: duplicate owns: block" >&2; return 1; fi
+      seen_block=1; in_block=1; continue
+    fi
+    if [[ "$line" =~ ^owns:[[:space:]]*[^[:space:]] ]]; then
+      echo "parse-owns: owns: must start a block (one glob per indented line, no inline value): '$line'" >&2; return 1
+    fi
+  done < "$f"
+  if [[ "$seen_block" -eq 1 && "$count" -eq 0 ]]; then
+    echo "parse-owns: owns: block is empty (declare at least one path glob, or remove the block)" >&2
+    return 1
+  fi
+  return 0
+}
+
+FILE="${1:-}"
+[[ -n "$FILE" ]] || { echo "parse-owns: usage: parse-owns <project.prompt>" >&2; exit 2; }
+parse_owns "$FILE"

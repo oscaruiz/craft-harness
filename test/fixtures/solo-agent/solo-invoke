@@ -8,7 +8,9 @@
 #
 # Variants: happy (does every phase right) · badhandoff (specify writes a handoff
 # missing a section) · stuck (hangs — the R10 per-phase breaker) · basecommit
-# (code commits but verify is meant to run at the wrong commit — B3 driver).
+# (code commits but verify is meant to run at the wrong commit — B3 driver) ·
+# outofscope (code does `git add -A` and sweeps an out-of-scope file into the
+# candidate commit — the D17 owned-path negative driver).
 set -uo pipefail
 
 VARIANT="$1"; shift
@@ -67,7 +69,14 @@ FEAT
     # report into CRAFT_WRAPPER_LOG for the inspector.
     crap.sh sut.sh || true
     dry.sh sut.sh || true
-    git add sut.sh
+    if [[ "$VARIANT" == outofscope ]]; then
+      # The D17 anti-pattern: create an out-of-scope file and `git add -A`, so
+      # the candidate commit carries a path the owned-path contract forbids.
+      printf 'scratch\n' > notes.txt
+      git add -A
+    else
+      git add sut.sh
+    fi
     git commit -q -m "code: implement SUT-1 (sut prints 42)"
     commit="$(git rev-parse --short=10 HEAD)"
     emit_handoff code verify "commit: $commit" "- implemented SUT-1 by making sut.sh echo 42"

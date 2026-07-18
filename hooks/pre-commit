@@ -8,6 +8,53 @@ set -euo pipefail
 # here and is covered by doctor's hash check instead — decisions.md D1).
 BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
 
+# --- owned-path allowlist parser (D17/D19) -----------------------------------
+# KEEP parse_owns() BYTE-FAITHFUL WITH bin/parse-owns — the two are guarded
+# against drift by the test owns-parser-matches-between-parse-owns-and-hook. The
+# hook is a self-contained copy under .git/hooks/, so it cannot source the fork's
+# bin/; it embeds the parser instead. Emits globs on stdout; returns 1 (message
+# on stderr) on a malformed block; a missing file is "no allowlist" (empty, 0).
+parse_owns() {
+  local f="$1" line glob in_block=0 seen_block=0 count=0
+  [[ -f "$f" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$in_block" -eq 1 ]]; then
+      if [[ -z "${line//[[:space:]]/}" ]]; then in_block=0; continue; fi   # blank ends block
+      if [[ "$line" == [![:space:]]* ]]; then in_block=0; fi               # dedent ends block, re-evaluate below
+    fi
+    if [[ "$in_block" -eq 1 ]]; then
+      glob="$line"
+      glob="${glob#"${glob%%[![:space:]]*}"}"   # ltrim
+      glob="${glob%"${glob##*[![:space:]]}"}"    # rtrim
+      [[ -n "$glob" ]] || continue
+      if [[ "$glob" == *[[:space:]]* ]]; then
+        echo "parse-owns: owns entry must be a single token (embedded whitespace): '$glob'" >&2; return 1; fi
+      if [[ "$glob" == /* ]]; then
+        echo "parse-owns: owns entry must be relative, not absolute: '$glob'" >&2; return 1; fi
+      if [[ "$glob" == *..* ]]; then
+        echo "parse-owns: owns entry must not contain '..': '$glob'" >&2; return 1; fi
+      printf '%s\n' "$glob"
+      count=$(( count + 1 ))
+      continue
+    fi
+    if [[ "$line" =~ ^owns:[[:space:]]*$ ]]; then
+      if [[ "$seen_block" -eq 1 ]]; then echo "parse-owns: duplicate owns: block" >&2; return 1; fi
+      seen_block=1; in_block=1; continue
+    fi
+    if [[ "$line" =~ ^owns:[[:space:]]*[^[:space:]] ]]; then
+      echo "parse-owns: owns: must start a block (one glob per indented line, no inline value): '$line'" >&2; return 1
+    fi
+  done < "$f"
+  if [[ "$seen_block" -eq 1 && "$count" -eq 0 ]]; then
+    echo "parse-owns: owns: block is empty (declare at least one path glob, or remove the block)" >&2
+    return 1
+  fi
+  return 0
+}
+
+# Escape hatch for the anti-drift test only — git never passes the hook args.
+if [[ "${1:-}" == "--parse-owns" ]]; then parse_owns "${2:-}"; exit $?; fi
+
 branch_file=".craft-harness/branch"
 if [[ -f "$branch_file" ]]; then
   enforced=$(<"$branch_file")
@@ -23,6 +70,36 @@ if [[ -n "$violations" ]]; then
   echo "pre-commit: refusing commit touching forbidden path(s):" >&2
   echo "$violations" >&2
   exit 1
+fi
+
+# Allowlist mode (D17/D19): when project.prompt declares an owns: set, staged
+# paths outside it are refused too (defence in depth with run-solo — D2). A
+# malformed contract refuses the commit (fail-closed), same as run-solo.
+if [[ -f project.prompt ]]; then
+  owns=""
+  set +e
+  owns=$(parse_owns project.prompt)
+  owns_rc=$?
+  set -e
+  if [[ "$owns_rc" -ne 0 ]]; then
+    echo "pre-commit: refusing commit — malformed owned-path contract (project.prompt owns:)" >&2
+    exit 1
+  fi
+  if [[ -n "$owns" ]]; then
+    mapfile -t OWNS <<< "$owns"
+    out_of_scope=()
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      ok=0
+      for g in "${OWNS[@]}"; do [[ "$p" == $g ]] && { ok=1; break; }; done
+      (( ok )) || out_of_scope+=("$p")
+    done < <(git diff --cached --name-only)
+    if (( ${#out_of_scope[@]} > 0 )); then
+      echo "pre-commit: refusing commit touching path(s) outside the owned set (project.prompt owns:):" >&2
+      printf '%s\n' "${out_of_scope[@]}" >&2
+      exit 1
+    fi
+  fi
 fi
 
 exit 0

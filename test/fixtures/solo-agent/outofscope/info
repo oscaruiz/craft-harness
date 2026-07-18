@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "fake-solo-agent outofscope 0.1"

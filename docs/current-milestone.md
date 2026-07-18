@@ -1,71 +1,54 @@
-# Milestone 4 — solo-pack (sequential mode)
+# Milestone 4.5 — Owned-path contract (closes D17)
 
-Goal: our sequential pack. N phases, each a fresh headless CLI process
-(CONTRACT.md Mode 1; wake-up = fresh invoke carrying the message, per D7),
-mandatory structured handoffs, verifier isolated in a clean worktree from the
-candidate commit, no tmux and no daemon. Reference: `docs/design-v2.2.md`
-§1 (R4, R6, R8, R10), §5, §7.4.
+Goal: turn "work only inside <paths>" from prose the LLM may ignore into an
+executable contract the harness enforces on the candidate commit. Surfaced by
+the myCQRS value checkpoint: run-solo records HEAD without scoping paths
+(bin/run-solo:293-294), and no machine-readable owned-path set exists anywhere
+(pre-commit is blacklist-only; conf has no path field; project.prompt is read
+by zero executable code). Reference: `docs/design-v2.2.md` §1 (R4, R9), D17.
 
-## Standing constraints
-- D8 (codex) is a v0.1 exit item; it does not block this milestone.
-- The specify phase's human gate is exercised FOR REAL in the evidence run:
-  the runner pauses and waits for the owner's approval of the spec. Do not
-  add any auto-approve path.
+## Design decisions to make first (record as D19)
+1. **Where owned paths are declared.** Recommendation: a new structured field
+   in project.prompt (`owns:` — one glob per line), since scope is a project
+   property. This gives project.prompt its first machine-readable field, so
+   define a tiny, strict parser (ignore prose, read only the fenced/keyed
+   block) rather than parsing the whole file.
+2. **Enforcement points (both, not either):**
+   - run-solo: after the code phase, the candidate commit must touch only
+     owned paths; if it touches anything outside, the run fails with
+     attribution (naming the offending paths) and does not proceed to verify.
+   - pre-commit hook: upgraded from blacklist-only to also enforce the
+     allowlist when an owns-set is present — so a bypassed hook is caught by
+     run-solo, and a bypassed run-solo is caught by the hook. Defence in depth,
+     per D2.
 
 ## Behaviors to implement (in order)
-
-1. **Structured handoff schema + validator.** Schema doc (fields: done /
-   decisions / assumptions / open items / commands executed) + a validating
-   helper reused by runner and inspector. Tests: valid handoff passes;
-   missing field, empty decisions-with-changes, malformed header each fail
-   with the field named.
-2. **Sequential runner** (`bin/run-solo --project <path>`). Three phases:
-   *specify* (produces spec + documental Gherkin with scenario IDs; pauses
-   for the owner's approval — R6), *code+clean* (implements against the
-   approved spec; quality via wrappers only), *verify* (see 3). Each phase:
-   fresh adapter invoke in its own workdir, structured handoff written and
-   validated before the next phase starts; a failed validation stops the run
-   with attribution. Queue/handoff state lives in the persistent location
-   probed by doctor (D6) — a crash mid-run must be visible as "session in
-   flight".
-3. **Verifier isolation.** The verify phase runs in a clean worktree checked
-   out from the **candidate commit** (the code phase's result), with inputs
-   restricted to: approved spec, diff vs. baseline, handoffs, wrapper/test
-   outputs. Tests: a planted mismatch (worktree at baseline instead of
-   candidate) must turn the run red; workdir contains no transcript or
-   scratch from prior phases.
-4. **Breakers (R10).** Per-phase timeout (reuse run-with-timeout), a
-   phase-retry cap, and a whole-run timeout. Tests: a stuck fake phase is
-   killed with attribution; the retry cap trips and stops the run.
-5. **Inspector extension.** `inspect-run` learns solo sessions: same negative
-   asserts as m3 (no mutation invocation anywhere; executed threshold 6 from
-   wrapper logs; commits only on the enforced branch, no blacklisted paths;
-   handoffs schema-valid and consumed) plus scenario-ID traceability: every
-   Gherkin scenario ID in the approved spec is referenced by at least one
-   test or verify-phase check. Suite-tested against fabricated good/bad
-   session dirs, including a planted mutation call.
-6. **The real run.** The same toy task as m3, through solo-pack with
-   claude-code headless. The owner approves the spec at the gate. Evidence
-   into `docs/evidence/m4/`: phase logs, handoffs, run manifest, inspector
-   report. One run; stop-and-report on environment failure, no retries.
+1. **Owns-set parser** (`bin/parse-owns` or a shared helper). Reads the `owns:`
+   block from project.prompt into a glob list; empty/missing = no allowlist
+   (backward compatible — existing packs unaffected). Tests: valid block
+   parsed; malformed block fails loudly; prose elsewhere ignored.
+2. **Candidate-commit scope check** in run-solo. Compute the commit's touched
+   paths (vs the phase baseline), assert every path matches an owned glob,
+   else fail before verify with the offending paths named. Tests against
+   fabricated commits: in-scope passes; a planted out-of-scope file turns the
+   run red (this is the D17 negative test).
+3. **Hook allowlist mode.** When an owns-set is present, pre-commit rejects
+   staged paths outside it (keeping the existing blacklist). Tests: staged
+   out-of-scope path rejected; in-scope allowed; no owns-set → old behavior.
+4. **Wire myCQRS.** Add `owns: src/core/**` to myCQRS's project.prompt (the
+   real consumer that surfaced this). No code change to myCQRS itself.
 
 ## Exit criteria
-- bb suite green, including: invalid handoff rejected with the field named;
-  verifier-at-wrong-commit turns red; retry cap trips; planted mutation call
-  turns the inspector red.
-- Real-run evidence in `docs/evidence/m4/` with the inspector green and the
-  human gate exercised (owner approval visible in the session record).
-- Milestone merged to main and pushed.
+- bb suite green, including the planted out-of-scope negative test (D17) and
+  the hook allowlist tests.
+- A dirty working tree no longer contaminates the candidate commit: a run
+  with unrelated dirt present commits only owned paths (or fails naming the
+  dirt) — the exact myCQRS condition, reproduced in a test.
+- D19 recorded (declaration location + parser + dual enforcement).
+- Merged to main; branch pushed (by owner, from Windows).
 
-## After this milestone — owner's checkpoints (NOT autonomous work)
-The design's two checkpoints belong to the owner, on her real project:
-- **Value checkpoint:** first small real feature in myCQRS using whichever
-  light path performed better. If the harness does not improve real work,
-  stop and rethink before building more.
-- **Survival checkpoint:** keep exactly one light path (two-pack-lite or
-  solo-pack); archive the other.
-Claude Code's job here is only to assist when asked — the verdicts are hers.
-
-## Out of scope for milestone 4
-Real language toolchains (m5–6) · six-pack · codex certification (D8, v0.1
-exit item) · any upstream edit · auto-approval of the human gate.
+## Out of scope
+The value checkpoint itself (runs AFTER this lands) · CRLF/.gitattributes in
+myCQRS (that's D18, owner-side, independent) · real language toolchains
+(m5-6) · any change to what the packs' role prompts say (prose stays; we're
+adding executable enforcement beneath it, not rewriting it).

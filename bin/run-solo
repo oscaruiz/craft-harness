@@ -52,6 +52,14 @@ command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
 # R6 precondition: an approved task.md must exist before any phase runs.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
 
+# R4/R9 owned-path contract (D17/D19): project.prompt's `owns:` block is the
+# machine-readable set the candidate commit is scoped to. Validate it up front so
+# a malformed contract is a fail-closed stop BEFORE any phase runs — the actual
+# scope enforcement happens after the code phase (enforce_owned_scope). A missing
+# file or no owns: block is "no allowlist" and passes (backward compatible).
+bash "$FORK_ROOT/bin/parse-owns" "$PROJECT/project.prompt" >/dev/null \
+  || die "malformed owned-path contract in $PROJECT/project.prompt (owns: block); fix it before running"
+
 # --- adapter resolution (same rule as run-scenario) -------------------------
 case "$ADAPTER" in
   */*) ADAPTER_DIR="$ADAPTER" ;;
@@ -245,6 +253,33 @@ validate_phase_handoff() { # <name> [--changed]
 
 record_phase() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$PHASES_TSV"; }
 
+# R4/R9 owned-path enforcement (D17/D19): the candidate commit must touch only
+# paths in project.prompt's owns: set. run-solo does NOT author the commit (the
+# agent does — that is D17's root), so we do not silently re-scope it: we FAIL the
+# run here, before verify ever judges the commit (R4), naming the offending paths.
+# No owns-set => no restriction (the check is a no-op, backward compatible).
+enforce_owned_scope() {
+  local owns_out
+  owns_out="$(bash "$FORK_ROOT/bin/parse-owns" "$PROJECT/project.prompt" 2>"$STATE/.ownserr")" \
+    || fail_phase code "malformed owned-path contract — $(tr -d '\n' < "$STATE/.ownserr")"
+  [[ -n "$owns_out" ]] || return 0
+  local -a owns=(); mapfile -t owns <<< "$owns_out"
+  local baseline candidate
+  baseline="$(cat "$STATE/baseline_commit")"
+  candidate="$(cat "$STATE/candidate_commit")"
+  local -a offenders=()
+  local path g ok
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    ok=0
+    for g in "${owns[@]}"; do [[ "$path" == $g ]] && { ok=1; break; }; done
+    (( ok )) || offenders+=("$path")
+  done < <(git -C "$PROJECT" diff --name-only "$baseline" "$candidate")
+  if (( ${#offenders[@]} > 0 )); then
+    fail_phase code "candidate commit touches paths outside the owned set (owns: ${owns[*]}); offending paths: ${offenders[*]}"
+  fi
+}
+
 # --- specify + gate (fresh start) -------------------------------------------
 start_fresh() {
   mkdir -p "$SPEC" "$HANDOFFS" "$LOGS" "$APPROVAL" "$PROMPTS"
@@ -298,6 +333,9 @@ run_code_and_verify() {
   local candidate; candidate="$(cat "$STATE/candidate_commit")"
   local baseline; baseline="$(cat "$STATE/baseline_commit")"
   [[ "$candidate" != "$baseline" ]] || fail_phase code "no candidate commit produced (HEAD unchanged)"
+
+  # R4/R9 (D17/D19): scope the candidate to the owned-path set BEFORE verify.
+  enforce_owned_scope
 
   # verify phase — clean worktree at the candidate commit (B3). Restricted
   # inputs: the diff vs baseline + the handoffs travel via env; the worktree
