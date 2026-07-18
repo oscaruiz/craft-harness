@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "fake-agent happy 0.1"

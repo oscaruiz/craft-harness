@@ -9,10 +9,12 @@
                 (require 'craft-harness.scenario-asserts-test)
                 (require 'craft-harness.timeout-test)
                 (require 'craft-harness.adapter-resolution-test)
+                (require 'craft-harness.runner-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'craft-harness.launcher-test
                                                                     'craft-harness.scenario-asserts-test
                                                                     'craft-harness.timeout-test
-                                                                    'craft-harness.adapter-resolution-test)]
+                                                                    'craft-harness.adapter-resolution-test
+                                                                    'craft-harness.runner-test)]
                   (System/exit (+ fail error))))}}}

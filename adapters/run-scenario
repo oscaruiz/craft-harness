@@ -55,4 +55,144 @@ done
 
 # --- orchestration (behavior B4) ------------------------------------------
 
-die "scenario orchestration not implemented yet (milestone 2, behavior B4)"
+command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+
+RUN_WITH_TIMEOUT="$FORK_ROOT/adapters/run-with-timeout"
+SCENARIO_ASSERTS="$FORK_ROOT/adapters/scenario-asserts"
+MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
+
+WORKDIR="$OUT/workdir"
+LOGS="$OUT/logs"
+PROMPTS="$OUT/prompts"
+PHASES_TSV="$OUT/phases.tsv"
+MANIFEST="$OUT/manifest.json"
+[[ -e "$WORKDIR" ]] && die "refusing to reuse existing workdir $WORKDIR — choose a fresh --out"
+mkdir -p "$WORKDIR" "$LOGS" "$PROMPTS"
+: > "$PHASES_TSV"
+
+ADAPTER_INFO="$("$ADAPTER_DIR/info")"
+FORK_COMMIT="$(git -C "$FORK_ROOT" rev-parse HEAD)"
+
+# The canonical toy repo (adapters/CONTRACT.md): committed task.md, broken
+# sut.sh, deterministic test.sh, baseline commit on the enforced branch.
+git -C "$WORKDIR" init -q -b main
+git -C "$WORKDIR" config user.email "scenario@craft-harness.local"
+git -C "$WORKDIR" config user.name "craft-harness scenario"
+printf 'Make ./test.sh pass: sut.sh must print 42.\n' > "$WORKDIR/task.md"
+printf '#!/usr/bin/env bash\necho broken\n' > "$WORKDIR/sut.sh"
+cat > "$WORKDIR/test.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$(bash ./sut.sh)" == "42" ]]
+EOF
+chmod +x "$WORKDIR/sut.sh" "$WORKDIR/test.sh"
+git -C "$WORKDIR" add -A
+git -C "$WORKDIR" commit -q -m "scenario baseline"
+BASELINE="$(git -C "$WORKDIR" rev-parse HEAD)"
+mkdir -p "$WORKDIR/.git/info"
+printf '/.swarmforge/\n' >> "$WORKDIR/.git/info/exclude"
+
+# roles.tsv so real agents can use the upstream handoff helpers; the agent
+# invokes as the coder, handing off to the verifier.
+mkdir -p "$WORKDIR/.swarmforge"
+{
+  printf 'coder\tcoder\t%s\tswarmforge-coder\tCoder\t%s\ttask\n' "$WORKDIR" "$ADAPTER"
+  printf 'verifier\tverifier\t%s\tswarmforge-verifier\tVerifier\t%s\ttask\n' "$WORKDIR" "$ADAPTER"
+} > "$WORKDIR/.swarmforge/roles.tsv"
+export SWARMFORGE_ROLE=coder
+
+# Phase prompts. The stable "PHASE: <name>" first line is contract surface
+# (fake agents dispatch on it; real CLIs read past it). The wakeup prompt IS
+# the upstream wake message (decisions.md D7).
+cat > "$PROMPTS/edit.prompt" <<'EOF'
+PHASE: edit
+
+Read task.md in this repository and apply the change it describes to sut.sh.
+Do not run tests and do not commit in this phase.
+EOF
+cat > "$PROMPTS/test.prompt" <<'EOF'
+PHASE: test
+
+Run ./test.sh in this repository. If it fails, fix sut.sh until it passes.
+EOF
+cat > "$PROMPTS/commit.prompt" <<'EOF'
+PHASE: commit
+
+Commit your work on the current branch with a short message.
+Never touch task.md, adapters/ or the constitution articles.
+EOF
+cat > "$PROMPTS/handoff.prompt" <<'EOF'
+PHASE: handoff
+
+Queue a git_handoff to the role 'verifier' for task 'toy-task', referencing
+the commit you just created. The handoff must end up as a .handoff file in
+.swarmforge/handoffs/outbox/ (SWARMFORGE_ROLE is set to 'coder').
+EOF
+cat > "$PROMPTS/wakeup.prompt" <<'EOF'
+PHASE: wakeup
+
+You have new handoff mail. If idle, run ready_for_next.sh.
+EOF
+
+write_manifest() { # <outcome> [failed_phase] [failure]
+  local args=(
+    "$MANIFEST" "$PHASES_TSV"
+    "adapter=$ADAPTER"
+    "adapter_info=$ADAPTER_INFO"
+    "fork_commit=$FORK_COMMIT"
+    "baseline_commit=$BASELINE"
+    "workdir=$WORKDIR"
+    "phase_timeout_s=$PHASE_TIMEOUT"
+    "outcome=$1"
+  )
+  [[ $# -ge 2 ]] && args+=("failed_phase=$2")
+  [[ $# -ge 3 ]] && args+=("failure=$3")
+  bb "$MANIFEST_BB" "${args[@]}"
+}
+
+fail_run() { # <phase> <failure> <duration-s>
+  printf '%s\t%s\t%s\n' "$1" "$3" "$2" >> "$PHASES_TSV"
+  write_manifest failed "$1" "$2"
+  die "scenario failed at phase '$1' ($2) — evidence in $LOGS and $MANIFEST"
+}
+
+run_phase() { # <name>
+  local name="$1" rc=0 arc=0 start duration
+  start="$(date +%s)"
+  bash "$RUN_WITH_TIMEOUT" "$PHASE_TIMEOUT" -- \
+    "$ADAPTER_DIR/invoke" --workdir "$WORKDIR" --prompt-file "$PROMPTS/$name.prompt" \
+    > "$LOGS/$name.log" 2>&1 || rc=$?
+  duration=$(( $(date +%s) - start ))
+  [[ $rc -eq 124 ]] && fail_run "$name" timeout "$duration"
+  [[ $rc -ne 0 ]] && fail_run "$name" invoke_failed "$duration"
+  local assert_args=(--workdir "$WORKDIR")
+  case "$name" in
+    edit) assert_args+=(--baseline "$BASELINE") ;;
+    commit) assert_args+=(--baseline "$BASELINE" --branch main) ;;
+  esac
+  bash "$SCENARIO_ASSERTS" "$name" "${assert_args[@]}" \
+    > "$LOGS/$name.assert.log" 2>&1 || arc=$?
+  if [[ $arc -ne 0 ]]; then
+    cat "$LOGS/$name.assert.log" >&2
+    fail_run "$name" assert_failed "$duration"
+  fi
+  printf '%s\t%s\t%s\n' "$name" "$duration" ok >> "$PHASES_TSV"
+}
+
+deliver_handoffs() { # the daemon's role, without tmux (decisions.md D7)
+  local inbox_new="$WORKDIR/.swarmforge/handoffs/inbox/new"
+  local f
+  mkdir -p "$inbox_new"
+  for f in "$WORKDIR/.swarmforge/handoffs/outbox/"*.handoff; do
+    [[ -e "$f" ]] || continue
+    mv "$f" "$inbox_new/"
+  done
+}
+
+for phase in edit test commit handoff wakeup; do
+  [[ "$phase" == "wakeup" ]] && deliver_handoffs
+  run_phase "$phase"
+done
+write_manifest success
+echo "run-scenario: SUCCESS — adapter '$ADAPTER' passed the canonical scenario"
+echo "run-scenario: evidence in $OUT (manifest.json, logs/)"

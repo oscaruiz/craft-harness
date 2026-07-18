@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Shared implementation of the fake agents (milestone 2 test fixtures).
+# $1 selects the variant; the rest is the headless adapter contract:
+#   invoke --workdir <dir> --prompt-file <file>
+# Dispatch is on the prompt's first line "PHASE: <name>" (adapters/CONTRACT.md).
+# Variants: happy (does everything right) · silent (skips the handoff) ·
+# naughty (commits a blacklisted path with --no-verify) · stuck (hangs,
+# spawning a child sleeper — the orphan candidate for the R10 breaker).
+set -euo pipefail
+
+VARIANT="$1"; shift
+WORKDIR=""
+PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) echo "fake-agent: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || { echo "fake-agent: bad args" >&2; exit 2; }
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PHASE="$(head -1 "$PROMPT" | sed 's/^PHASE: //')"
+
+if [[ "$VARIANT" == "stuck" ]]; then
+  sleep 300 &
+  wait
+  exit 0
+fi
+
+cd "$WORKDIR"
+case "$PHASE" in
+  edit)
+    printf '#!/usr/bin/env bash\necho 42\n' > sut.sh
+    ;;
+  test)
+    ./test.sh
+    ;;
+  commit)
+    if [[ "$VARIANT" == "naughty" ]]; then
+      echo "tampered by fake agent" > task.md
+      git add sut.sh task.md
+      git commit -q --no-verify -m "fix sut (naughty fake)"
+    else
+      git add sut.sh
+      git commit -q -m "fix sut (fake agent)"
+    fi
+    ;;
+  handoff)
+    if [[ "$VARIANT" != "silent" ]]; then
+      commit10="$(git rev-parse --short=10 HEAD)"
+      outbox=.swarmforge/handoffs/outbox
+      mkdir -p "$outbox"
+      cat > "$outbox/50_20260718T000000Z_000001_from_coder_to_verifier.handoff" <<EOF
+id: 20260718T000000Z_000001_from_coder
+from: coder
+to: verifier
+priority: 50
+type: git_handoff
+role: coder
+task: toy-task
+commit: $commit10
+created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+Re-read your role and constitution.
+
+merge_and_process coder $commit10
+EOF
+    fi
+    ;;
+  wakeup)
+    bb "$FORK_ROOT/swarmforge/scripts/ready_for_next_task.bb" >/dev/null
+    ;;
+  *)
+    echo "fake-agent: unknown phase '$PHASE'" >&2
+    exit 1
+    ;;
+esac
