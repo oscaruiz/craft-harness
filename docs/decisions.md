@@ -216,6 +216,36 @@ the correct workdir — it is only the tool-approval prompt that blocks. run-pac
 the wrappers, the inspector and the breakers are all validated (fake dry-run
 through the real project layout is inspector-green).
 
+## D13 — Wrapper output must be durable; the agent TUI collapses tool stdout, and batch handoffs nest (2026-07-18, m3)
+
+The second B6 real run (permission envelope in place, D12/A) **functionally
+succeeded**: the coder read task.md, fixed sut.sh, ran the tests, committed on
+main and queued a `git_handoff`; the cleaner consumed the batch, ran `crap.sh`
+(score 0 / threshold 6 → pass) and `dry.sh`, found nothing to clean, and
+correctly declined to bounce an empty handoff back (no functional change → no
+loop). Mutation was never invoked; commits stayed on main touching no
+blacklisted path. But the inspector went **red on two evidence-reading gaps**,
+not on any pipeline failure:
+
+- **(b) CRAP threshold** — Claude Code collapses tool output in its TUI, so the
+  wrapper's literal `crap: threshold=6` never reached the captured pane. The
+  pane is therefore an unreliable evidence channel for wrapper output. Fix: the
+  wrappers mirror their normalized report into `CRAFT_WRAPPER_LOG` (set by
+  run-pack to `<session>/logs/wrappers.log`); bin/inspect-run reads the executed
+  threshold from that durable file — the wrapper's own output, not the agent's
+  collapsed transcript. This keeps the "never from the prompt" guarantee.
+- **(d) handoffs** — batch-mode consumption nests the handoff under
+  `inbox/completed/batch_<ts>/`, which the inspector's flat glob missed. Fix:
+  the handoff scan now recurses (find), so batched consumed handoffs count. This
+  fix applies to already-captured evidence: re-inspecting run #2 turns (d) green.
+
+Consequence: (d) is fixed in place; (b) required durable logging that run #2 did
+not have, so a fresh run is needed to capture it. Everything else about run #2
+validated the whole chain on a real agent — trust, permission envelope, launch,
+constitution/role/task reading, the wrappers, swarm_handoff.sh, ready_for_next
+batching, commits, breakers. The design lesson: a captured TUI transcript is not
+evidence of tool execution; the tool must leave its own durable artifact.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

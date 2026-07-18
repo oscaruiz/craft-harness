@@ -147,8 +147,11 @@ launch_string() { # <role>: faithful claude Mode-2 launch + tools/toy on PATH
   # PATH order: our toy wrappers (crap.sh/dry.sh), then the pack's upstream
   # helpers (swarm_handoff.sh/ready_for_next.sh — how a real agent hands off and
   # consumes), then run-pack's own PATH (the intended claude), then inherited.
-  printf "export SWARMFORGE_ROLE=%q && export PATH=%q:%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
-    "$role" "$FORK_ROOT/tools/toy" "$PROJECT/swarmforge/scripts" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$sysprompt" "SwarmForge $role" "$userprompt"
+  # CRAFT_WRAPPER_LOG makes the quality-gate output durable in the session logs:
+  # a real agent's TUI collapses tool stdout, so the pane capture alone cannot
+  # prove the executed CRAP threshold to the inspector (decisions.md D13).
+  printf "export SWARMFORGE_ROLE=%q && export CRAFT_WRAPPER_LOG=%q && export PATH=%q:%q:%q:\"\$PATH\" && cd %q && %s --append-system-prompt-file %q --permission-mode acceptEdits -n %q \"\$(cat %q)\"" \
+    "$role" "$OUT/logs/wrappers.log" "$FORK_ROOT/tools/toy" "$PROJECT/swarmforge/scripts" "$RUNPACK_PATH" "$PROJECT" "$ADAPTER" "$sysprompt" "SwarmForge $role" "$userprompt"
 }
 
 capture_panes() {

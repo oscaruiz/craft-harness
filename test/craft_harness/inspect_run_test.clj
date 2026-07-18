@@ -108,6 +108,12 @@
 (defn put-handoff! [{:keys [dir]} sub text]
   (write-file (fs/path dir ".swarmforge" "handoffs" "inbox" sub handoff-name) text))
 
+(defn put-handoff-batch! [{:keys [dir]} sub text]
+  ;; batch-mode consumption nests the handoff under inbox/<sub>/batch_<ts>/
+  (write-file (fs/path dir ".swarmforge" "handoffs" "inbox" sub
+                       "batch_20260718T180311Z_000001" handoff-name)
+              text))
+
 ;; --- fabricating the session dir (logs/ + manifest.json) -----------------
 
 (def clean-cleaner-log
@@ -172,6 +178,15 @@
         r (inspect s p)]
     (is (green? r) (str "a clean session must be green:\n" (:all r)))
     (is (re-find #"(?i)pass" (:all r)))))
+
+(deftest batch-consumed-handoff-is-green
+  (testing "a handoff consumed in batch mode (nested under inbox/completed/batch_*/) still counts"
+    (let [p (make-project!)
+          _ (put-handoff-batch! p "completed" (handoff-text (head-10 p)))
+          s (make-session! p {})
+          r (inspect s p)]
+      (is (green? r)
+          (str "the inspector must find batch-nested consumed handoffs:\n" (:all r))))))
 
 ;; --- (a) mutation: the star negative assert ------------------------------
 

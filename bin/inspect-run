@@ -141,17 +141,20 @@ validate_handoff() { # <file> -> echoes an error string, empty if well-formed
   echo ""
 }
 
+handoffs_under() { # <dir>: every .handoff at any depth (batch mode nests them
+  # in inbox/<stage>/batch_<ts>/ — decisions.md D11 / ready_for_next batching)
+  [[ -d "$1" ]] || return 0
+  find "$1" -type f -name '*.handoff' 2>/dev/null
+}
+
 check_handoffs() {
   local hb="$PROJECT/.swarmforge/handoffs"
-  local all=("$hb/outbox"/*.handoff
-             "$hb/inbox/new"/*.handoff
-             "$hb/inbox/in_process"/*.handoff
-             "$hb/inbox/completed"/*.handoff)
+  mapfile -t all < <(handoffs_under "$hb")
   if (( ${#all[@]} == 0 )); then
     fail "handoffs" "the pack produced no handoff at all (.swarmforge/handoffs is empty)"
     return
   fi
-  local new=("$hb/inbox/new"/*.handoff)
+  mapfile -t new < <(handoffs_under "$hb/inbox/new")
   if (( ${#new[@]} > 0 )); then
     fail "handoffs" "handoff(s) still unconsumed in inbox/new: $(basename "${new[0]}")"
     return
@@ -161,8 +164,11 @@ check_handoffs() {
     err="$(validate_handoff "$f")"
     [[ -z "$err" ]] || { fail "handoffs" "$err"; return; }
   done
-  # consumed handoffs must carry dequeued_at (ready_for_next semantics, D7)
-  for f in "$hb/inbox/in_process"/*.handoff "$hb/inbox/completed"/*.handoff; do
+  # consumed handoffs must carry dequeued_at (ready_for_next semantics, D7),
+  # including the batched ones under inbox/<stage>/batch_*/.
+  local consumed
+  mapfile -t consumed < <(handoffs_under "$hb/inbox/in_process"; handoffs_under "$hb/inbox/completed")
+  for f in "${consumed[@]}"; do
     [[ -n "$(header "$f" dequeued_at)" ]] \
       || { fail "handoffs" "$(basename "$f") was never dequeued via ready_for_next (no dequeued_at)"; return; }
   done

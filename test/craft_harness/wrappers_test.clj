@@ -125,6 +125,19 @@
         (is (re-find #"(?m)^crap: score=1\b" (output res)) "0 + 1 = 1")
         (is (not (str/includes? (output res) "syntax error")))))))
 
+(deftest crap-mirrors-report-to-a-durable-log-when-asked
+  (testing "CRAFT_WRAPPER_LOG makes the report durable (a real agent's TUI collapses stdout)"
+    (let [d (clean-repo)
+          log (fs/path d "wrappers.log")
+          res (run crap d {"CRAFT_WRAPPER_LOG" (str log)} "sut.sh")]
+      (is (passes? res))
+      (is (fs/exists? log) "the wrapper must have written the durable log")
+      (is (re-find #"(?m)^crap: threshold=6\b" (slurp (str log)))
+          "the durable log must carry the executed threshold, byte-for-byte")
+      (testing "appends, does not clobber (a second run adds a second block)"
+        (run crap d {"CRAFT_WRAPPER_LOG" (str log)} "sut.sh")
+        (is (= 2 (count (re-seq #"(?m)^crap: threshold=6\b" (slurp (str log))))))))))
+
 ;; --- DRY wrapper ---------------------------------------------------------
 
 (deftest dry-passes-on-non-duplicated-code

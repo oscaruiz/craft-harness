@@ -61,12 +61,14 @@ if (( score > THRESHOLD )); then
   rc=1
 fi
 
-echo "dry: score=$score"
-echo "dry: threshold=$THRESHOLD"
-if (( ${#offenders[@]} > 0 )); then
-  echo "dry: offenders=${offenders[*]}"
-else
-  echo "dry: offenders=none"
+offenders_line="dry: offenders=none"
+(( ${#offenders[@]} > 0 )) && offenders_line="dry: offenders=${offenders[*]}"
+report="$(printf 'dry: score=%s\ndry: threshold=%s\n%s\ndry: result=%s' \
+  "$score" "$THRESHOLD" "$offenders_line" "$result")"
+
+printf '%s\n' "$report"
+# Durable evidence (see crap.sh): mirror the report into CRAFT_WRAPPER_LOG when set.
+if [[ -n "${CRAFT_WRAPPER_LOG:-}" ]]; then
+  printf '%s\n' "$report" >> "$CRAFT_WRAPPER_LOG" 2>/dev/null || true
 fi
-echo "dry: result=$result"
 exit "$rc"

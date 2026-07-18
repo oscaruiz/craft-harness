@@ -74,12 +74,18 @@ if (( score > THRESHOLD )); then
   rc=1
 fi
 
-echo "crap: score=$score"
-echo "crap: threshold=$THRESHOLD"
-if (( ${#offenders[@]} > 0 )); then
-  echo "crap: offenders=${offenders[*]}"
-else
-  echo "crap: offenders=none"
+offenders_line="crap: offenders=none"
+(( ${#offenders[@]} > 0 )) && offenders_line="crap: offenders=${offenders[*]}"
+report="$(printf 'crap: score=%s\ncrap: threshold=%s\n%s\ncrap: result=%s' \
+  "$score" "$THRESHOLD" "$offenders_line" "$result")"
+
+printf '%s\n' "$report"
+# Durable evidence: a real agent CLI (e.g. Claude Code) collapses tool output in
+# its TUI, so the pane capture cannot be trusted to hold this line. When run-pack
+# points CRAFT_WRAPPER_LOG at the session's log dir, append the report there so
+# bin/inspect-run reads the executed threshold from the wrapper itself, not from
+# the agent's collapsed transcript.
+if [[ -n "${CRAFT_WRAPPER_LOG:-}" ]]; then
+  printf '%s\n' "$report" >> "$CRAFT_WRAPPER_LOG" 2>/dev/null || true
 fi
-echo "crap: result=$result"
 exit "$rc"
