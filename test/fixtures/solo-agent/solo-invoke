@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Fake solo agent for the run-solo suite (milestone 4). One headless turn per
+# phase (adapters/CONTRACT.md Mode 1): dispatch on the prompt's "PHASE: <name>"
+# first line, do the phase's work in --workdir, and write a schema-valid
+# structured handoff to $SOLO_HANDOFF (bin/handoff-validate.bb). run-solo passes
+# the spec dir as $SOLO_SPEC_DIR. $1 selects the variant.
+#
+# Variants: happy (does every phase right) · badhandoff (specify writes a handoff
+# missing a section) · stuck (hangs — the R10 per-phase breaker) · basecommit
+# (code commits but verify is meant to run at the wrong commit — B3 driver).
+set -uo pipefail
+
+VARIANT="$1"; shift
+WORKDIR=""; PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || { echo "fake solo-agent: bad args" >&2; exit 2; }
+PHASE="$(head -1 "$PROMPT" | sed 's/^PHASE: //')"
+cd "$WORKDIR"
+
+if [[ "$VARIANT" == stuck ]]; then sleep 300 & wait; exit 0; fi
+
+emit_handoff() { # <from> <to> <commit-line-or-empty> <decisions-bullets>
+  {
+    echo "id: $(date -u +%Y%m%dT%H%M%S%NZ)_$1"
+    echo "from: $1"
+    echo "to: $2"
+    echo "phase: $1"
+    echo "created_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    [[ -n "$3" ]] && echo "$3"
+    echo
+    echo "# done"
+    echo "- $1 phase completed its work"
+    echo "# decisions"
+    printf '%s\n' "$4"
+    # badhandoff: drop the assumptions section from the specify handoff
+    if ! { [[ "$VARIANT" == badhandoff && "$1" == specify ]]; }; then
+      echo "# assumptions"
+      echo "- bash and git are available"
+    fi
+    echo "# open items"
+    echo "- none"
+    echo "# commands executed"
+    echo "- (fake) $1 phase"
+  } > "$SOLO_HANDOFF"
+}
+
+case "$PHASE" in
+  specify)
+    mkdir -p "$SOLO_SPEC_DIR/features"
+    printf '# Spec: sut.sh must print 42 so ./test.sh passes.\n' > "$SOLO_SPEC_DIR/spec.md"
+    cat > "$SOLO_SPEC_DIR/features/toy.feature" <<'FEAT'
+Feature: toy sut behavior
+  @SUT-1
+  Scenario: sut prints 42
+    When ./test.sh runs
+    Then it exits 0
+FEAT
+    emit_handoff specify code "" "- scenario SUT-1 defines the required 42 output"
+    ;;
+  code)
+    printf '#!/usr/bin/env bash\necho 42\n' > sut.sh
+    git add sut.sh
+    git commit -q -m "code: implement SUT-1 (sut prints 42)"
+    commit="$(git rev-parse --short=10 HEAD)"
+    emit_handoff code verify "commit: $commit" "- implemented SUT-1 by making sut.sh echo 42"
+    ;;
+  verify)
+    if ./test.sh >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
+    emit_handoff verify done "" "- SUT-1: $verdict — ran ./test.sh against the candidate"
+    ;;
+  *)
+    echo "fake solo-agent: unknown phase '$PHASE'" >&2; exit 1 ;;
+esac

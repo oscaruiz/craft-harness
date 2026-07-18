@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# craft-harness run-solo — milestone 4, behaviors B2/B3/B4.
+#
+#   run-solo --project <path> --adapter <name-or-dir>
+#            [--approval-timeout <s>] [--phase-timeout <s>]
+#            [--retry-cap <n>] [--run-timeout <s>]
+#
+# The solo-pack: a sequential runner of our own — no tmux, no daemon. Three
+# phases, each a fresh headless `invoke` (adapters/CONTRACT.md Mode 1) in its own
+# workdir with no inherited transcript; what one phase learned reaches the next
+# only through the structured handoff (B1), which run-solo validates before the
+# next phase starts. Phases:
+#   specify   — produces spec + documental Gherkin (scenario IDs); then the run
+#               PAUSES for the owner's approval (R6). No auto-approve path.
+#   code      — implements the approved spec, commits the candidate on the
+#               enforced branch; quality via the crap.sh/dry.sh wrappers only.
+#   verify    — runs in a clean git worktree checked out at the CANDIDATE commit
+#               (B3), inputs restricted to spec + diff + handoffs + tool output.
+#
+# Session state is persistent under <project>/.craft-harness/solo/current so a
+# crash mid-run is visible as "session in flight" (R8/D6, detected by doctor).
+# The gate is a resume point: invocation 1 runs specify and pauses; the owner
+# approves; a later invocation resumes into code+verify. Exit 0 = paused-cleanly
+# or completed-and-green; non-zero = a phase or handoff failed (attributed).
+set -euo pipefail
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+die() { echo "run-solo: $*" >&2; exit 1; }
+usage() {
+  echo "usage: run-solo --project <path> --adapter <name-or-dir> [--approval-timeout <s>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>]" >&2
+  exit 2
+}
+
+PROJECT=""; ADAPTER=""; APPROVAL_TIMEOUT=0
+PHASE_TIMEOUT=0; RETRY_CAP=1; RUN_TIMEOUT=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    --adapter) ADAPTER="${2:-}"; shift 2 ;;
+    --approval-timeout) APPROVAL_TIMEOUT="${2:-}"; shift 2 ;;
+    --phase-timeout) PHASE_TIMEOUT="${2:-}"; shift 2 ;;
+    --retry-cap) RETRY_CAP="${2:-}"; shift 2 ;;
+    --run-timeout) RUN_TIMEOUT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$PROJECT" && -n "$ADAPTER" ]] || usage
+[[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+
+# R6 precondition: an approved task.md must exist before any phase runs.
+[[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
+
+# --- adapter resolution (same rule as run-scenario) -------------------------
+case "$ADAPTER" in
+  */*) ADAPTER_DIR="$ADAPTER" ;;
+  *) if [[ -d "$ADAPTER" ]]; then ADAPTER_DIR="$ADAPTER"; else ADAPTER_DIR="$FORK_ROOT/adapters/$ADAPTER"; fi ;;
+esac
+[[ -d "$ADAPTER_DIR" ]] || die "adapter '$ADAPTER' not found at $ADAPTER_DIR"
+for exe in invoke info; do
+  [[ -x "$ADAPTER_DIR/$exe" ]] || die "adapter '$ADAPTER': missing executable '$exe'"
+done
+
+# --- paths ------------------------------------------------------------------
+STATE="$PROJECT/.craft-harness/solo/current"
+SPEC="$STATE/spec"
+HANDOFFS="$STATE/handoffs"
+LOGS="$STATE/logs"
+APPROVAL="$STATE/approval"
+PROMPTS="$STATE/prompts"
+MANIFEST="$STATE/manifest.json"
+PHASES_TSV="$STATE/phases.tsv"
+STATUS="$STATE/status"
+FAILURE="$STATE/failure"
+VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
+MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+set_status() { printf '%s\n' "$1" > "$STATUS"; }
+
+ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
+
+write_manifest() { # <outcome>
+  local args=(
+    "$MANIFEST" "$PHASES_TSV"
+    "pack=solo-pack" "project=$PROJECT" "adapter=$ADAPTER" "adapter_info=$ADAPTER_INFO"
+    "fork_commit=$(git -C "$FORK_ROOT" rev-parse HEAD)"
+    "enforced_branch=$(cat "$STATE/enforced_branch" 2>/dev/null || echo '?')"
+    "baseline_commit=$(cat "$STATE/baseline_commit" 2>/dev/null || echo '?')"
+    "candidate_commit=$(cat "$STATE/candidate_commit" 2>/dev/null || echo '')"
+    "retry_cap=$RETRY_CAP" "phase_timeout_s=$PHASE_TIMEOUT" "run_timeout_s=$RUN_TIMEOUT"
+    "outcome=$1"
+  )
+  bb "$MANIFEST_BB" "${args[@]}" >/dev/null
+}
+
+fail_phase() { # <phase> <reason>
+  printf 'FAILED at phase %s: %s\n' "$1" "$2" > "$FAILURE"
+  set_status "failed"
+  write_manifest "failed"
+  die "phase '$1' failed: $2"
+}
+
+write_prompt() { # <phase> <body>
+  printf 'PHASE: %s\n\n%s\n' "$1" "$2" > "$PROMPTS/$1.prompt"
+}
+
+seed_prompts() {
+  mkdir -p "$PROMPTS"
+  write_prompt specify "Read task.md at the repository root. Produce a specification (write spec.md) and documental Gherkin feature files (features/*.feature) with a scenario ID tag like @SUT-1 on each scenario, all under the directory named by \$SOLO_SPEC_DIR. Do NOT write production code and do NOT commit. Then write your structured handoff to \$SOLO_HANDOFF following docs/solo-handoff-schema.md (sections: done / decisions / assumptions / open items / commands executed)."
+  write_prompt code "Implement the approved specification in \$SOLO_SPEC_DIR against task.md: change the code so ./test.sh passes, and commit the result on the current git branch (do not switch branches). Run quality gates through the crap.sh and dry.sh wrappers ONLY — never a language quality tool and never any mutation testing. Then write your structured handoff (include a 'commit:' header with your candidate commit) to \$SOLO_HANDOFF per docs/solo-handoff-schema.md."
+  write_prompt verify "You are the independent verifier in a clean checkout of the candidate commit — you did not write this code and have no prior transcript. Inputs: the approved spec in \$SOLO_SPEC_DIR, the diff in \$SOLO_DIFF, and the prior handoffs in \$SOLO_HANDOFFS_DIR. Run ./test.sh and check each scenario ID from the spec is satisfied. Do NOT modify code or commit. Write your verdict and structured handoff (referencing the scenario IDs you checked) to \$SOLO_HANDOFF per docs/solo-handoff-schema.md."
+}
+
+run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
+  local name="$1" wd="$2" rc=0
+  set_status "running_$name"
+  local runner=(bash "$ADAPTER_DIR/invoke" --workdir "$wd" --prompt-file "$PROMPTS/$name.prompt")
+  if [[ "$PHASE_TIMEOUT" -gt 0 ]]; then
+    runner=(bash "$FORK_ROOT/adapters/run-with-timeout" "$PHASE_TIMEOUT" -- "${runner[@]}")
+  fi
+  SOLO_HANDOFF="$HANDOFFS/$name.handoff" \
+  SOLO_SPEC_DIR="$SPEC" \
+  SOLO_PHASE="$name" \
+  SOLO_PROJECT="$PROJECT" \
+  SOLO_DIFF="$STATE/diff.patch" \
+  SOLO_HANDOFFS_DIR="$HANDOFFS" \
+  CRAFT_WRAPPER_LOG="$LOGS/wrappers.log" \
+    "${runner[@]}" > "$LOGS/$name.log" 2>&1 || rc=$?
+  return $rc
+}
+
+# validate a phase handoff; on failure, attribute and stop the run.
+validate_phase_handoff() { # <name> [--changed]
+  local name="$1"; shift || true
+  local h="$HANDOFFS/$name.handoff"
+  [[ -f "$h" ]] || fail_phase "$name" "no structured handoff written to $h"
+  bb "$VALIDATE" "$h" "$@" 2>"$STATE/.verr" \
+    || fail_phase "$name" "invalid handoff — $(tr -d '\n' < "$STATE/.verr")"
+}
+
+record_phase() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$PHASES_TSV"; }
+
+# --- specify + gate (fresh start) -------------------------------------------
+start_fresh() {
+  mkdir -p "$SPEC" "$HANDOFFS" "$LOGS" "$APPROVAL" "$PROMPTS"
+  : > "$PHASES_TSV"
+  git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$STATE/enforced_branch"
+  git -C "$PROJECT" rev-parse HEAD > "$STATE/baseline_commit"
+  seed_prompts
+
+  local start; start="$(date +%s)"
+  run_phase specify "$PROJECT" || fail_phase specify "invoke failed (rc, see logs/specify.log)"
+  validate_phase_handoff specify
+  record_phase specify "$(( $(date +%s) - start ))" ok
+
+  # R6 gate — pause for the owner's approval. The token is printed to THIS
+  # console (never into an agent prompt or workdir), and only its hash is kept
+  # in state, so the audited agent cannot forge an approval it never saw.
+  local token
+  token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 32)"
+  printf '%s' "$token" | sha256sum | awk '{print $1}' > "$APPROVAL/token.sha256"
+  set_status "awaiting_approval"
+  write_manifest "awaiting_approval"
+  echo "run-solo: specify complete — spec at $SPEC (review spec.md and features/)."
+  echo "run-solo: APPROVAL REQUIRED (R6). To approve the spec, write the token below to:"
+  echo "run-solo:   $APPROVAL/APPROVED"
+  echo "run-solo: then re-run: run-solo --project '$PROJECT' --adapter '$ADAPTER'"
+  echo "APPROVAL_TOKEN: $token"
+  exit 0
+}
+
+approved() {
+  [[ -f "$APPROVAL/APPROVED" ]] || return 1
+  local given expected
+  given="$(printf '%s' "$(cat "$APPROVAL/APPROVED")" | sha256sum | awk '{print $1}')"
+  expected="$(cat "$APPROVAL/token.sha256" 2>/dev/null || true)"
+  [[ -n "$expected" && "$given" == "$expected" ]]
+}
+
+# --- code + verify (after approval) -----------------------------------------
+run_code_and_verify() {
+  local start
+
+  # code phase — in the project, on the enforced branch.
+  start="$(date +%s)"
+  run_phase code "$PROJECT" || fail_phase code "invoke failed (see logs/code.log)"
+  validate_phase_handoff code --changed
+  git -C "$PROJECT" rev-parse HEAD > "$STATE/candidate_commit"
+  record_phase code "$(( $(date +%s) - start ))" ok
+  local candidate; candidate="$(cat "$STATE/candidate_commit")"
+  local baseline; baseline="$(cat "$STATE/baseline_commit")"
+  [[ "$candidate" != "$baseline" ]] || fail_phase code "no candidate commit produced (HEAD unchanged)"
+
+  # verify phase — clean worktree at the candidate commit (B3). Restricted
+  # inputs: the diff vs baseline + the handoffs travel via env; the worktree
+  # itself carries no transcript or scratch from earlier phases.
+  git -C "$PROJECT" diff "$baseline" "$candidate" > "$STATE/diff.patch"
+  local vwd="$STATE/verify-workdir"
+  rm -rf "$vwd"
+  git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
+  git -C "$PROJECT" worktree add --detach "$vwd" "$candidate" >/dev/null 2>&1 \
+    || fail_phase verify "could not create verify worktree at candidate $candidate"
+
+  start="$(date +%s)"
+  run_phase verify "$vwd" || { git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true; fail_phase verify "invoke failed (see logs/verify.log)"; }
+  validate_phase_handoff verify
+  record_phase verify "$(( $(date +%s) - start ))" ok
+  git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
+
+  set_status "done"
+  write_manifest "success"
+  echo "run-solo: SUCCESS — all phases complete; evidence under $STATE"
+}
+
+# --- dispatch ---------------------------------------------------------------
+if [[ ! -d "$STATE" ]]; then
+  start_fresh
+fi
+
+case "$(cat "$STATUS" 2>/dev/null || echo unknown)" in
+  awaiting_approval)
+    if approved; then
+      echo "run-solo: spec approved — resuming into code and verify."
+      run_code_and_verify
+    else
+      echo "run-solo: still AWAITING APPROVAL — the spec has not been approved yet."
+      echo "run-solo:   write the approval token to $APPROVAL/APPROVED, then re-run."
+      exit 0
+    fi
+    ;;
+  done)
+    echo "run-solo: this session is already complete (status=done)."
+    exit 0
+    ;;
+  failed)
+    die "previous run failed ($(cat "$FAILURE" 2>/dev/null)). Remove $STATE to restart."
+    ;;
+  running_*)
+    die "session in flight ($(cat "$STATUS")) — refusing to clobber. Investigate or remove $STATE to restart (R8)."
+    ;;
+  *)
+    die "unrecognized session state; remove $STATE to restart."
+    ;;
+esac

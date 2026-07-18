@@ -159,6 +159,18 @@ detect_in_flight() { # prints a reason and returns 0 either way; empty = idle
     printf 'unsent handoff(s) in .swarmforge/handoffs/outbox/'
     return 0
   fi
+  # solo-pack session state (milestone 4): D6 deliberately deferred this probe
+  # to m4, when the sequential runner defines its own state. A current session
+  # whose status is not 'done' is in flight (a paused gate or a crash).
+  local solo="$p/.craft-harness/solo/current"
+  if [[ -d "$solo" ]]; then
+    local st
+    st="$(cat "$solo/status" 2>/dev/null || echo unknown)"
+    if [[ "$st" != "done" ]]; then
+      printf 'solo-pack session in flight (status=%s) in .craft-harness/solo/current/' "$st"
+      return 0
+    fi
+  fi
   return 0
 }
 
@@ -209,14 +221,17 @@ upgrade_cmd() {
 # 0 healthy · 10 outdated · 20 managed file modified · 30 session in flight.
 doctor_cmd() {
   [[ -n "$PROJECT" ]] || die "doctor requires --project <path>"
-  local state="$PROJECT/.craft-harness"
-  [[ -L "$state/current" ]] || die "project not initialized (no .craft-harness/current) — use 'craft-harness run'"
+  # An in-flight session is reported first, before the install-integrity checks:
+  # a solo-pack run (m4) leaves session state without materializing a pack, so
+  # its "in flight" must be visible even when .craft-harness/current is absent.
   local reason
   reason="$(detect_in_flight "$PROJECT")"
   if [[ -n "$reason" ]]; then
     echo "session in-flight: $reason"
     exit 30
   fi
+  local state="$PROJECT/.craft-harness"
+  [[ -L "$state/current" ]] || die "project not initialized (no .craft-harness/current) — use 'craft-harness run'"
   local installed entries e
   installed="$(cat "$PROJECT/.craft-harness-version")"
   entries="$(manifest_entries)"
