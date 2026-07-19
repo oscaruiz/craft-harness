@@ -929,6 +929,37 @@ command under `quality:`; the toy wrappers remain test utilities, not production
 verdict sources. Mutation is out of the runner's configured actions, but the
 harness makes no unauditable claim that an agent never invoked it.
 
+## D29 — Honest boundary of language-agnostic gates; command evidence is authenticated (2026-07-19, m6)
+
+The harness guarantee is deliberately precise: **the commands declared by the
+project ran against the candidate and exited successfully**. It does not claim
+that those commands semantically test all changed modules, cover the approved
+scenarios, or constitute an adequate test suite. A contract such as `test:
+true`, or `test: mvn test -pl unrelated-module`, can therefore pass. Deciding
+whether a command reaches the relevant code would require language- and
+build-system-specific graph analysis. That is outside this language-agnostic
+harness and is an accepted contract boundary, not another generic gate to
+approximate with lexical or fixture-derived heuristics. Consequently user-facing
+claims must say "declared commands ran and succeeded", never simply "the code is
+tested".
+
+Scenario traceability is likewise **advisory by design**, consistent with D26's
+treatment of DRY. The verifier is prompted to inspect the documental Gherkin and
+name each scenario ID, but neither the runner nor inspector proves that a test
+corresponding to every ID exists or ran. Scenario IDs in a handoff are review
+evidence, not an executable gate.
+
+One evidence-integrity issue is executable and is fixed in m6. `commands.tsv`
+remains with the session for inspection, but after the runner executes the
+declared commands it authenticates the exact bytes with a secret key held under
+the runner-private state root, outside the project working tree and absent from
+phase environments. The authenticator is recorded in the manifest and
+`inspect-run` recomputes it before trusting any command record. A structurally
+plausible post-run edit—including changing only a duration—now makes inspection
+fail as tampering. This protects retained evidence; as before, the runner acts
+directly on each live exit status, so retained evidence never decides whether a
+failed command may continue.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

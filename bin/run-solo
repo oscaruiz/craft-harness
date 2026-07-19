@@ -56,6 +56,21 @@ PROJECT="$(cd "$PROJECT" && pwd)"
 command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
 [[ "$COMMAND_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--command-timeout must be a positive integer"
 
+# Runner-private authentication anchor for retained command evidence (D29/m6).
+# Resolve it before invoking any phase, then remove the override from the phase
+# environment. The key lives outside the audited project and is never exposed in
+# a prompt, handoff, worktree, manifest, or agent environment.
+PRIVATE_STATE_ROOT="${CRAFT_HARNESS_PRIVATE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/craft-harness}"
+unset CRAFT_HARNESS_PRIVATE_STATE
+mkdir -p "$PRIVATE_STATE_ROOT"
+PRIVATE_STATE_ROOT="$(cd "$PRIVATE_STATE_ROOT" && pwd)"
+case "$PRIVATE_STATE_ROOT/" in
+  "$PROJECT"/*) die "runner-private state must be outside the project working tree: $PRIVATE_STATE_ROOT" ;;
+esac
+PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
+PRIVATE_EVIDENCE_DIR="$PRIVATE_STATE_ROOT/solo/$PROJECT_STATE_ID"
+COMMAND_EVIDENCE_KEY="$PRIVATE_EVIDENCE_DIR/commands.key"
+
 # R6 precondition: an approved task.md must exist before any phase runs.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
 
@@ -171,6 +186,10 @@ trap cleanup_worktree EXIT
 ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
 
 write_manifest() { # <outcome>
+  local command_evidence_mac=""
+  if [[ -f "$COMMAND_EVIDENCE_KEY" && -f "$COMMANDS_TSV" ]]; then
+    command_evidence_mac="$(command_evidence_mac)"
+  fi
   local args=(
     "$MANIFEST" "$PHASES_TSV"
     "pack=$PACK" "project=$PROJECT" "adapter=$ADAPTER" "adapter_info=$ADAPTER_INFO"
@@ -180,9 +199,28 @@ write_manifest() { # <outcome>
     "candidate_commit=$(cat "$STATE/candidate_commit" 2>/dev/null || echo '')"
     "retry_cap=$RETRY_CAP" "phase_timeout_s=$PHASE_TIMEOUT" "run_timeout_s=$RUN_TIMEOUT"
     "command_timeout_s=$COMMAND_TIMEOUT"
+    "command_evidence_mac=$command_evidence_mac"
     "outcome=$1"
   )
   bb "$MANIFEST_BB" "${args[@]}" >/dev/null
+}
+
+command_evidence_mac() {
+  local candidate
+  candidate="$(cat "$STATE/candidate_commit" 2>/dev/null || true)"
+  { cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$candidate"; \
+    cat "$COMMANDS_TSV"; cat "$COMMAND_EVIDENCE_KEY"; } \
+    | sha256sum | awk '{print $1}'
+}
+
+initialize_command_evidence_key() {
+  mkdir -p "$PRIVATE_EVIDENCE_DIR"
+  chmod 700 "$PRIVATE_STATE_ROOT/solo" "$PRIVATE_EVIDENCE_DIR"
+  if [[ ! -f "$COMMAND_EVIDENCE_KEY" ]]; then
+    umask 077
+    head -c 32 /dev/urandom > "$COMMAND_EVIDENCE_KEY"
+  fi
+  chmod 600 "$COMMAND_EVIDENCE_KEY"
 }
 
 fail_phase() { # <phase> <reason>
@@ -335,6 +373,7 @@ enforce_owned_scope() {
 
 # --- specify + gate (fresh start) -------------------------------------------
 start_fresh() {
+  initialize_command_evidence_key
   mkdir -p "$SPEC" "$HANDOFFS" "$LOGS" "$APPROVAL" "$PROMPTS"
   : > "$PHASES_TSV"
   : > "$COMMANDS_TSV"
@@ -473,7 +512,8 @@ run_code_and_verify() {
 
   set_status "inspecting"
   write_manifest "success"
-  if ! bash "$FORK_ROOT/bin/inspect-run" "$STATE" "$PROJECT" > "$STATE/inspect-report.txt" 2>&1; then
+  if ! CRAFT_HARNESS_PRIVATE_STATE="$PRIVATE_STATE_ROOT" \
+      bash "$FORK_ROOT/bin/inspect-run" "$STATE" "$PROJECT" > "$STATE/inspect-report.txt" 2>&1; then
     fail_phase inspect "post-run inspector rejected the evidence (see $STATE/inspect-report.txt)"
   fi
   set_status "done"

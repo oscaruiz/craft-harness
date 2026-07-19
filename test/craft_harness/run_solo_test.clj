@@ -57,13 +57,17 @@
 
 (def ^:dynamic *extra-env* {})
 
+(defn private-state-root [project]
+  (str (fs/path (fs/parent project) "runner-private-state")))
+
 (defn run-solo! [project variant & extra]
   (let [r (apply sh/sh "bash" run-solo
                  "--project" (str project)
                  "--adapter" (str (fs/path fixtures variant))
                  (concat extra
                          [:env (merge {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
-                                       "GIT_CONFIG_NOSYSTEM" "1"}
+                                       "GIT_CONFIG_NOSYSTEM" "1"
+                                       "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root project)}
                                       *extra-env*)]))]
     (assoc r :all (str (:out r) (:err r)))))
 
@@ -205,13 +209,36 @@
           inspect (str (fs/path repo-root "bin" "inspect-run"))
           r (sh/sh "bash" inspect (str (state p)) (str p)
                    :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
-                         "GIT_CONFIG_NOSYSTEM" "1"})
+                         "GIT_CONFIG_NOSYSTEM" "1"
+                         "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root p)})
           out (str (:out r) (:err r))]
       (is (zero? (:exit r)) (str "the solo inspector must be green on a real run-solo session:\n" out))
       (is (str/includes? out "RESULT: PASS"))
       (testing "the runner recorded its exact successful test command"
         (is (str/includes? (slurp (str (fs/path (state p) "commands.tsv")))
                            "test\t"))))))
+
+(deftest tampered-command-record-is-rejected
+  (testing "runner-owned command evidence is authenticated, not trusted as plain project state"
+    (let [p (make-project!)
+          r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")
+          commands (fs/path (state p) "commands.tsv")
+          inspect (str (fs/path repo-root "bin" "inspect-run"))]
+      (is (zero? (:exit r2)) (:all r2))
+      ;; Preserve the exact label/rc/command structure the old inspector checked;
+      ;; change only a numeric duration so rejection proves authentication.
+      (let [[label _duration rc command] (str/split (str/trim (slurp (str commands))) #"\t")]
+        (spit (str commands) (str label "\t999\t" rc "\t" command "\n")))
+      (let [r (sh/sh "bash" inspect (str (state p)) (str p)
+                     :env {"PATH" (System/getenv "PATH")
+                           "HOME" (System/getenv "HOME")
+                           "GIT_CONFIG_NOSYSTEM" "1"
+                           "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root p)})
+            out (str (:out r) (:err r))]
+        (is (not (zero? (:exit r))) "tampered evidence must not inspect green")
+        (is (re-find #"(?i)tamper|authentic|digest|command evidence" out))))))
 
 ;; --- a phase's invalid handoff stops the run with attribution ----------------
 

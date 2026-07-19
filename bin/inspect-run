@@ -5,14 +5,18 @@ set -euo pipefail
 FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION="${1:-}"; PROJECT="${2:-}"
 [[ -d "$SESSION" && -d "$PROJECT/.git" ]] || { echo "usage: inspect-run <session-dir> <project>" >&2; exit 2; }
+PROJECT="$(cd "$PROJECT" && pwd)"
 MANIFEST="$SESSION/manifest.json"; COMMANDS="$SESSION/commands.tsv"
 [[ -f "$MANIFEST" ]] || { echo "inspect-run: missing manifest.json" >&2; exit 2; }
 command -v bb >/dev/null 2>&1 || { echo "inspect-run: babashka is required" >&2; exit 2; }
 
 mapfile -t MF < <(bb "$FORK_ROOT/bin/inspect_manifest.bb" "$MANIFEST" \
-  pack enforced_branch baseline_commit candidate_commit outcome)
+  pack enforced_branch baseline_commit candidate_commit outcome command_evidence_mac)
 PACK="${MF[0]:-}"; BRANCH="${MF[1]:-}"; BASELINE="${MF[2]:-}"
-CANDIDATE="${MF[3]:-}"; OUTCOME="${MF[4]:-}"
+CANDIDATE="${MF[3]:-}"; OUTCOME="${MF[4]:-}"; RECORDED_COMMAND_MAC="${MF[5]:-}"
+PRIVATE_STATE_ROOT="${CRAFT_HARNESS_PRIVATE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/craft-harness}"
+PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
+COMMAND_EVIDENCE_KEY="$PRIVATE_STATE_ROOT/solo/$PROJECT_STATE_ID/commands.key"
 declare -a RESULTS=(); FAILED=0
 pass() { RESULTS+=("PASS $1"); }
 fail() { RESULTS+=("FAIL $1: $2"); FAILED=1; }
@@ -62,6 +66,16 @@ check_handoffs() {
 
 check_commands() {
   [[ -f "$COMMANDS" ]] || { fail commands "missing runner-owned commands.tsv"; return; }
+  [[ "$RECORDED_COMMAND_MAC" =~ ^[0-9a-f]{64}$ ]] \
+    || { fail commands "missing or malformed command evidence authenticator"; return; }
+  [[ -f "$COMMAND_EVIDENCE_KEY" ]] \
+    || { fail commands "runner-private command evidence key is unavailable"; return; }
+  local actual_mac
+  actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
+    cat "$COMMANDS"; cat "$COMMAND_EVIDENCE_KEY"; } \
+    | sha256sum | awk '{print $1}')"
+  [[ "$actual_mac" == "$RECORDED_COMMAND_MAC" ]] \
+    || { fail commands "command evidence authentication failed (record was tampered with)"; return; }
   local contract expected=() actual=() kind a b label duration rc command i
   contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
     || { fail commands "invalid project contract: $contract"; return; }
