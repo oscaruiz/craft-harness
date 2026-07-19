@@ -159,9 +159,9 @@ launch string. Do not `send-keys` into a freshly-spawned interactive zsh pane.
 ## D10 — Git author identity is `oscaruiz`, kept repo-locally (2026-07-18, m3)
 
 Git identity was unset in the WSL environment; the m1/m2 history is authored by
-`oscaruiz <[email-redacted]>` (the repo owner). The session context lists a
-different address (`[email-redacted]`), but the committed history is the
-source of truth. Owner ruling: keep `oscaruiz` set **repo-locally**
+`oscaruiz` (the repo owner, under their personal address). The session context
+lists a different address belonging to the same owner, but the committed
+history is the source of truth. Owner ruling: keep `oscaruiz` set **repo-locally**
 (`git config user.name/user.email`, not global), amend nothing. Recorded here
 so the author/session-email mismatch is not mistaken later for a leak or a
 misconfiguration.
