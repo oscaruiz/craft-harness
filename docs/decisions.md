@@ -1027,6 +1027,21 @@ narrow property. Removing it would discard useful integrity checking; D29 and
 D30 now prevent that check from being represented as a malicious-agent security
 boundary.
 
+## D31 — History rewritten to purge personal email addresses (2026-07-19)
+
+An audit of the public repo found two personal email addresses in the D10 text
+of this file. They were removed from the current version and then purged from
+history: `git filter-branch --index-filter` rewrote `e3d3ceb` (the commit that
+introduced them) and its 67 descendants, replacing both addresses with
+`[email-redacted]` in every historical blob of `docs/decisions.md`. Nothing
+else changed: every pre-`e3d3ceb` commit (including upstream's signed history)
+kept its exact hash, every rewritten branch tip differs from its old tip only
+in this file, and the full test suite passed identically before and after.
+Commit-author metadata was deliberately left untouched, per D10's "amend
+nothing" ruling. Consequence: all post-m3 commit hashes changed and the
+contaminated remote branches were force-pushed; any clone predating this
+rewrite must be re-cloned or hard-reset onto the new history.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
