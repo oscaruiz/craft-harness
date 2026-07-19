@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake `mvn` for the non-toy (Maven-shaped) run-solo fixture (D22). It stands in
+# for `mvn ... test`: the module is "green" iff the code phase produced its
+# committed artifact under src/core. Deliberately NOT named test.sh — the whole
+# point is a project whose test command is not the toy ./test.sh.
+[[ -f src/core/impl.txt ]]

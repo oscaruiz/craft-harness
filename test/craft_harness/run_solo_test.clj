@@ -412,6 +412,83 @@
         (is (not= "awaiting_approval" (status p)))
         (is (= base (head p)) "no code ran")))))
 
+;; --- m4.7 / D22: code/verify target the project's DECLARED test command ------
+;; The pack's code/verify role prompts must not hard-code the toy ./test.sh:
+;; run-solo reads a strict `test:` line from project.prompt and injects it as a
+;; literal TEST_CMD: line. Proven against a NON-TOY (Maven-shaped) fixture whose
+;; test command is not ./test.sh — deliberately unlike the toy, to defeat the
+;; "fixtures-mirror-the-toy blindness" (D22). Fake mvn, zero paid runs.
+
+(def fake-mvn-dir (str (fs/path repo-root "test" "fixtures" "fake-mvn")))
+
+(defn make-maven-project!
+  "A Maven-shaped project stub whose declared test command is NOT ./test.sh."
+  []
+  (let [dir (fs/path (tmp-dir) "mvnproj")]
+    (fs/create-dirs (fs/path dir "src" "core"))
+    (git! dir "init" "-q" "-b" "main")
+    (git! dir "config" "user.email" "toy@example.com")
+    (git! dir "config" "user.name" "Toy User")
+    (write-file (fs/path dir "pom.xml")
+                "<project><modules><module>src/core</module></modules></project>\n")
+    (write-file (fs/path dir "task.md")
+                "---\nhuman-approved: true\n---\n# Task: add the core impl so the module tests pass.\n")
+    (write-file (fs/path dir "project.prompt")
+                (str "Project: a Maven-shaped stub for the D22 test.\n"
+                     "test: mvn -q -pl src/core test\n"
+                     "owns:\n  src/core/**\n"))
+    (git! dir "add" "-A") (git! dir "commit" "-q" "-m" "maven baseline")
+    dir))
+
+(defn run-solo-maven!
+  "run-solo against the Maven-shaped fixture, with the fake mvn on PATH so the
+   declared test command resolves without a real Maven."
+  [project variant & extra]
+  (binding [*extra-env* {"PATH" (str fake-mvn-dir ":" (System/getenv "PATH"))}]
+    (apply run-solo! project variant extra)))
+
+(deftest code-and-verify-prompts-carry-the-projects-declared-test-command
+  (testing "a project that declares `test:` gets THAT command in code/verify prompts, not ./test.sh"
+    (let [p (make-maven-project!)]
+      (run-solo-maven! p "maven")            ; seeds all prompts, pauses at the gate
+      (doseq [phase ["code" "verify"]]
+        (let [prompt (slurp (str (fs/path (state p) "prompts" (str phase ".prompt"))))]
+          (is (str/includes? prompt "TEST_CMD: mvn -q -pl src/core test")
+              (str phase ".prompt must carry the project's declared test command"))
+          (is (not (re-find #"(?i)\./test\.sh|\bsut\.sh\b" prompt))
+              (str phase ".prompt must NOT hard-code the toy ./test.sh / sut.sh")))))))
+
+(deftest a-non-toy-project-drives-green-through-the-generic-prompts
+  (testing "D22 root-cause kill: a Maven-shaped project (test cmd != ./test.sh) runs green end to end"
+    (let [p (make-maven-project!)
+          base (head p)
+          r1 (run-solo-maven! p "maven")]
+      (is (zero? (:exit r1)) (str "specify must reach the gate:\n" (:all r1)))
+      (is (= "awaiting_approval" (status p)))
+      (approve! p (approval-token r1))
+      (let [r2 (run-solo-maven! p "maven")]
+        (is (zero? (:exit r2)) (str "the non-toy run must complete via the declared command:\n" (:all r2)))
+        (is (= "done" (status p)))
+        (is (not= base (head p)) "a candidate commit was produced")
+        (testing "the candidate is scoped to the owned path and carries the impl"
+          (is (= #{"src/core/impl.txt"} (candidate-touched p base))))
+        (testing "the verify handoff names the declared command, never ./test.sh"
+          (let [h (slurp (str (fs/path (state p) "handoffs" "verify.handoff")))]
+            (is (str/includes? h "mvn -q -pl src/core test"))
+            (is (not (re-find #"(?i)\./test\.sh" h)))))))))
+
+(deftest absent-test-declaration-defaults-to-the-toy-command
+  (testing "a project with no `test:` line still runs (default ./test.sh) — backward compatible"
+    (let [p (make-project!)                  ; toy project, no project.prompt
+          r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")]
+      (is (zero? (:exit r2)) (str "the toy default path must still complete:\n" (:all r2)))
+      (is (= "done" (status p)))
+      (let [prompt (slurp (str (fs/path (state p) "prompts" "verify.prompt")))]
+        (is (str/includes? prompt "TEST_CMD: ./test.sh")
+            "with no declaration the injected command defaults to ./test.sh")))))
+
 ;; --- interface hygiene -------------------------------------------------------
 
 (deftest run-solo-usage-is-clear
