@@ -206,13 +206,40 @@ Every section must be present. Use bullet lines under each heading.
 EOF
 }
 
+# The project's declared test command (D22). A single strict `test:` line in
+# project.prompt, e.g. `test: mvn -q test -pl src/core`. run-solo injects it into
+# the code/verify prompts (below) so those phases target the PROJECT's own test
+# entrypoint, never the harness toy ./test.sh. Absent/empty ⇒ default ./test.sh
+# (backward compatible — toy projects carry no project.prompt).
+project_test_cmd() {
+  local f="$PROJECT/project.prompt" cmd=""
+  if [[ -f "$f" ]]; then
+    cmd="$(sed -n 's/^test:[[:space:]]*//p' "$f" | head -1)"
+    cmd="${cmd%"${cmd##*[![:space:]]}"}"   # rtrim any trailing whitespace
+  fi
+  [[ -n "$cmd" ]] || cmd="./test.sh"
+  printf '%s' "$cmd"
+}
+
+# Injected into the code/verify prompts (D22) as a literal TEST_CMD line — the
+# same pattern as HANDOFF_PATH (D21): the runner hands the agent the resolved
+# value, never relying on the agent to parse project.prompt itself.
+test_cmd_instructions() { # <command>
+  cat <<EOF
+The project's declared test command is given literally on the next line — run it exactly as written to check your work (it is the project's own test entrypoint; do NOT assume any hard-coded test script):
+TEST_CMD: $1
+EOF
+}
+
 # The phase bodies come from the pack branch (D16); run-solo appends the
-# handoff-section instructions (a control it owns) and the PHASE header.
+# handoff-section instructions (a control it owns) and the PHASE header. The
+# code/verify phases also get the injected project test command (D22).
 seed_prompts() {
   mkdir -p "$PROMPTS"
+  local tc; tc="$(project_test_cmd)"
   write_prompt specify "$(load_role_body specify) $(handoff_instructions specify)"
-  write_prompt code "$(load_role_body code) $(handoff_instructions code)"
-  write_prompt verify "$(load_role_body verify) $(handoff_instructions verify)"
+  write_prompt code "$(load_role_body code) $(test_cmd_instructions "$tc") $(handoff_instructions code)"
+  write_prompt verify "$(load_role_body verify) $(test_cmd_instructions "$tc") $(handoff_instructions verify)"
 }
 
 RUN_START="$(date +%s)"

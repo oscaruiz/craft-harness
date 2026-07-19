@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# Generic (NON-TOY) fake solo agent for the D22 test. Unlike solo-invoke it
+# carries ZERO ./test.sh / sut.sh assumption: it discovers the project's test
+# command ONLY from the injected `TEST_CMD:` prompt line and runs THAT, and it
+# reads its handoff destination from the injected `HANDOFF_PATH:` line. It thus
+# proves the pack's code/verify prompts are project-generic — driven against a
+# Maven-shaped fixture whose test command is not ./test.sh.
+set -uo pipefail
+
+WORKDIR=""; PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || { echo "fake maven-agent: bad args" >&2; exit 2; }
+
+PHASE="$(head -1 "$PROMPT" | sed 's/^PHASE: //')"
+DEST="$(sed -n 's/^HANDOFF_PATH: //p' "$PROMPT" | head -1)"
+TEST_CMD="$(sed -n 's/^TEST_CMD: //p' "$PROMPT" | head -1)"
+cd "$WORKDIR"
+
+# code/verify are project-generic: they REQUIRE the runner to have injected the
+# project's declared test command. No injection (pre-fix) ⇒ this agent refuses,
+# which turns the D22 drive test red until run-solo injects TEST_CMD.
+if [[ "$PHASE" != specify && -z "$TEST_CMD" ]]; then
+  echo "fake maven-agent: no TEST_CMD injected into the $PHASE prompt (D22)" >&2
+  exit 3
+fi
+
+emit_handoff() { # <phase> <decisions-bullet>
+  {
+    echo "# done";            echo "- $1 phase completed"
+    echo "# decisions";       printf '%s\n' "$2"
+    echo "# assumptions";     echo "- the project declares its own test command"
+    echo "# open items";      echo "- none"
+    echo "# commands executed"; echo "- (fake maven) $1"
+  } > "$DEST"
+}
+
+case "$PHASE" in
+  specify)
+    mkdir -p "$SOLO_SPEC_DIR/features"
+    printf '# Spec: add src/core/impl.txt so the module test command passes.\n' > "$SOLO_SPEC_DIR/spec.md"
+    cat > "$SOLO_SPEC_DIR/features/api.feature" <<'FEAT'
+Feature: core module builds green
+  @SUT-1
+  Scenario: the declared test command passes
+    When the project's declared test command runs
+    Then it exits 0
+FEAT
+    emit_handoff specify "- SUT-1 requires the module's declared test command to pass"
+    ;;
+  code)
+    mkdir -p src/core
+    printf 'impl\n' > src/core/impl.txt
+    "$CRAFT_CRAP" src/core/impl.txt || true
+    "$CRAFT_DRY" src/core/impl.txt || true
+    git add src/core/impl.txt
+    git commit -q -m "code: add src/core/impl.txt so '$TEST_CMD' passes"
+    emit_handoff code "- implemented SUT-1 via src/core/impl.txt; test command is: $TEST_CMD"
+    ;;
+  verify)
+    if bash -c "$TEST_CMD" >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
+    emit_handoff verify "- SUT-1: $verdict — ran the project's declared command: $TEST_CMD"
+    [[ "$verdict" == pass ]] || exit 1
+    ;;
+  *)
+    echo "fake maven-agent: unknown phase '$PHASE'" >&2; exit 1 ;;
+esac
