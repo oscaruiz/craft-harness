@@ -530,6 +530,63 @@ every run. The suite modelled a capability the audited agent does not have.
 the owner restarts it; the failed session state under
 `myCQRS/.craft-harness/solo/current` is regenerable and will be re-derived.
 
+## D22 — solo-pack code/verify role prompts are hard-coded to the toy `test.sh`/`sut.sh` scenario (2026-07-19, m4.7, value checkpoint)
+
+Surfaced by the myCQRS value checkpoint *after* D21 unblocked the R6 gate. With
+the gate correctly showing the approved QueryInterceptor task, inspection of the
+seeded phase prompts revealed the **code** and **verify** role prompts on the
+`solo-pack` branch are written around the harness's own toy test project:
+
+- `solo-pack:swarmforge/roles/code.prompt` — *"change the code so **./test.sh**
+  passes … (e.g. `"$CRAFT_CRAP" **sut.sh**` …) … do not touch task.md or
+  **test.sh**"*.
+- `solo-pack:swarmforge/roles/verify.prompt` — *"**Run ./test.sh** and check that
+  each @-tagged scenario ID … is satisfied"*.
+
+myCQRS is a Maven/JUnit project: it has no `./test.sh` and no `sut.sh`. Had the
+owner approved, the **code** phase would have been told to make a nonexistent
+`./test.sh` pass and the **verifier** told to run it. The `specify` prompt is
+project-generic (it reads `task.md`); `code`/`verify` are toy-coupled. **This is
+not an R6-integrity defect** (the task behind the gate was the approved one) — it
+is a downstream pack-content defect that would have derailed implement + verify.
+
+### The recurring root: "fixtures-mirror-the-toy blindness"
+
+This is the **third** value-checkpoint defect (D20, D21, D22) whose common cause
+is the same: **the automated test fixtures ARE the toy project**, so the suite is
+structurally blind to any way a real project diverges from the toy.
+
+- D20 — `launcher-test` built its pack from the fork's own tree, so it never saw
+  a real pack branch miss a manifest file.
+- D21 — the fake solo agents read `$SOLO_HANDOFF` directly (plain bash), so the
+  suite never saw that a *confined* agent cannot expand it.
+- D22 — the fake solo project uses `./test.sh`, so the suite never saw that a
+  real project's test command is not `./test.sh`.
+
+Name it and use it: **fixtures-mirror-the-toy blindness** is now the harness's
+most productive defect class. Every new test must ask **"would this pass against
+a non-toy fixture?"** — and where a control depends on a project property (test
+command, path layout, toolchain), the suite must exercise it against a fixture
+that is deliberately *unlike* the toy, not a copy of it.
+
+### Fix (m4.7, executable — not a prompt tweak)
+
+1. A strict, machine-readable `test:` line in `project.prompt` (single command,
+   e.g. `test: mvn -q test -pl src/core`), mirroring the `owns:` contract (D19).
+   `run-solo` parses it and **injects it literally** into the code/verify prompts
+   as a `TEST_CMD:` line (the D21 pattern — never rely on the agent parsing
+   `project.prompt` itself). Absent ⇒ default `./test.sh` (backward compatible
+   with toy projects that carry no `project.prompt`).
+2. The `solo-pack` `code`/`verify` role prompts are rewritten project-generic:
+   *"make the project's declared test command (given below as TEST_CMD) pass"* —
+   no `./test.sh`/`sut.sh`.
+3. **Kill the blindness, not just the symptom:** a new **non-toy** fixture — a
+   Maven-shaped project stub whose declared test command is *not* `./test.sh`,
+   backed by a fake `mvn` — is driven through the real pack's code/verify prompts.
+   Tests assert the seeded prompts carry the declared command (and never
+   `./test.sh`/`sut.sh`), and that the whole pipeline runs green via that command.
+   Red before the fix, green after.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
