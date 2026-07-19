@@ -960,6 +960,51 @@ fail as tampering. This protects retained evidence; as before, the runner acts
 directly on each live exit status, so retained evidence never decides whether a
 failed command may continue.
 
+**Correction (2026-07-19, see D30).** “Runner-private” above describes location
+and authorship, not a security boundary. The same-user phase agent can derive
+and read the key despite the key being outside the project tree and absent from
+its environment. The accurate claim is therefore narrower: the command record
+is runner-written and protected against accidental or otherwise non-malicious
+post-run alteration. Its authenticator does not make retained evidence
+forgery-proof against a malicious phase agent that deliberately reads the key
+and rewrites both the record and authenticator.
+
+## D30 — Threat model: untrusted by carelessness, not malicious (2026-07-19)
+
+The current harness treats phase agents as **untrusted by carelessness**: an
+agent may skip a step, forget to run a test, misunderstand an instruction, make
+an incorrect claim in good faith, or return a superficially plausible handoff.
+Runner-owned gates exist so those mistakes do not become verdicts merely because
+an agent said the work passed. The current harness does **not** claim to defend
+against a malicious agent actively trying to forge harness evidence or escape
+the workflow.
+
+One adversarial guarantee still holds: the runner executes each declared test
+and quality command itself and acts on that live process's exit status before
+inspection. A non-zero exit or timeout stops the run immediately; rewriting the
+retained `commands.tsv` or its later inspection evidence cannot make that failed
+command continue as a pass.
+
+Retained command-record integrity does not hold against a malicious phase agent.
+Claude Code currently runs with `--dangerously-skip-permissions`, phases execute
+as the same OS user as the runner, and there is no filesystem read boundary
+between them. Under those conditions, any authentication secret the runner can
+read can also be read by the agent. A malicious agent can therefore read the m6
+key and recompute the authenticator after forging the record. File mode `0600`,
+an out-of-project location, and removal of the path override from the phase
+environment do not create isolation between same-user processes.
+
+Integrity against malicious agents requires an OS-enforced boundary: for
+example, running phases in a container, under a separate user, or with a
+filesystem policy that prevents reading runner state. That is the v2 security
+path and is explicitly outside the current harness scope.
+
+The m6 authenticator remains because it cheaply detects accidental edits and
+non-malicious post-run corruption, and its negative regression proves that
+narrow property. Removing it would discard useful integrity checking; D29 and
+D30 now prevent that check from being represented as a malicious-agent security
+boundary.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
