@@ -57,8 +57,6 @@ FEAT
   code)
     mkdir -p src/core
     printf 'impl\n' > src/core/impl.txt
-    "$CRAFT_CRAP" src/core/impl.txt || true
-    "$CRAFT_DRY" src/core/impl.txt || true
     git add src/core/impl.txt
     git commit -q -m "code: add src/core/impl.txt so '$TEST_CMD' passes"
     emit_handoff code "- implemented SUT-1 via src/core/impl.txt; test command is: $TEST_CMD"

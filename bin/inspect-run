@@ -1,284 +1,96 @@
 #!/usr/bin/env bash
-# craft-harness inspect-run — milestone 3, behavior B4.
-#
-#   inspect-run <session-dir> <project>
-#
-# The post-run inspector: pure deterministic checks over a finished pack
-# session's evidence (the logs run-pack captured) and the project's git and
-# handoff state. No agent output is ever trusted as a verdict — only what is
-# observable. Usable both by the bb suite (fabricated sessions) and by the
-# real run (B6), which commits the green report as evidence.
-#
-# Checks (design v2.2 §7.3; R3/R6/R9/R10):
-#   (a) NO mutation invocation anywhere in the session logs — the star assert
-#   (b) the executed CRAP threshold was 6, read from the wrapper logs
-#   (c) commits only on the enforced branch, touching no blacklisted path
-#   (d) handoffs well-formed and consumed
-#   (e) wake-up count within the R10 cap
-#
-# Exit 0 = every check green; 1 = at least one red (each named); 2 = usage.
+# Deterministic solo-run evidence inspector. Agent prose is never a verdict.
 set -euo pipefail
-shopt -s nullglob
 
 FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Must stay byte-identical to hooks/pre-commit (guarded by the test
-# blacklist-stays-identical-to-the-pre-commit-hook).
-BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
-
-# Mutation-INVOCATION signatures (design R3/R7: mutation is out of scope for the
-# two-pack). These match a mutation tool being RUN or its output — never the
-# cleaner's own prose forbidding it ("no PIT, no Stryker, no mutate tool"),
-# which must not be a false positive.
-MUTATION='org\.pitest|pitest-maven|mutationcoverage|mutate4java|mutate\.sh|npx[[:space:]]+stryker|stryker[[:space:]]+run|stryker\.conf|mutants?[[:space:]]+(killed|survived)'
-
-usage() { echo "usage: inspect-run <session-dir> <project>" >&2; exit 2; }
-
 SESSION="${1:-}"; PROJECT="${2:-}"
-[[ -n "$SESSION" && -n "$PROJECT" ]] || usage
-[[ -d "$SESSION" ]] || { echo "inspect-run: session dir not found: $SESSION" >&2; exit 2; }
-[[ -d "$PROJECT/.git" ]] || { echo "inspect-run: not a git repository: $PROJECT" >&2; exit 2; }
+[[ -d "$SESSION" && -d "$PROJECT/.git" ]] || { echo "usage: inspect-run <session-dir> <project>" >&2; exit 2; }
+MANIFEST="$SESSION/manifest.json"; COMMANDS="$SESSION/commands.tsv"
+[[ -f "$MANIFEST" ]] || { echo "inspect-run: missing manifest.json" >&2; exit 2; }
+command -v bb >/dev/null 2>&1 || { echo "inspect-run: babashka is required" >&2; exit 2; }
 
-LOGS="$SESSION/logs"
-MANIFEST="$SESSION/manifest.json"
-[[ -f "$MANIFEST" ]] || { echo "inspect-run: manifest.json not found in $SESSION" >&2; exit 2; }
-
-g() { git -C "$PROJECT" "$@"; }
-header() { sed -n "/^\$/q; s/^$2: //p" "$1" | head -1; }  # <file> <field>
-
-# check results, one line each: "PASS <label>" / "FAIL <label>: <reason>"
-declare -a RESULTS=()
-FAILED=0
+mapfile -t MF < <(bb "$FORK_ROOT/bin/inspect_manifest.bb" "$MANIFEST" \
+  pack enforced_branch baseline_commit candidate_commit outcome)
+PACK="${MF[0]:-}"; BRANCH="${MF[1]:-}"; BASELINE="${MF[2]:-}"
+CANDIDATE="${MF[3]:-}"; OUTCOME="${MF[4]:-}"
+declare -a RESULTS=(); FAILED=0
 pass() { RESULTS+=("PASS $1"); }
 fail() { RESULTS+=("FAIL $1: $2"); FAILED=1; }
 
-# --- manifest fields ------------------------------------------------------
-
-command -v bb >/dev/null 2>&1 || { echo "inspect-run: babashka (bb) is required" >&2; exit 2; }
-mapfile -t MF < <(bb "$FORK_ROOT/bin/inspect_manifest.bb" "$MANIFEST" \
-                     pack enforced_branch baseline_commit wake_cap wake_count)
-PACK="${MF[0]:-}"
-ENFORCED_BRANCH="${MF[1]:-}"
-BASELINE="${MF[2]:-}"
-WAKE_CAP="${MF[3]:-}"
-WAKE_COUNT="${MF[4]:-}"
-VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
-
-# --- (a) no mutation invocation in the session logs -----------------------
-
-check_mutation() {
-  local hits
-  hits="$(grep -rniE "$MUTATION" "$LOGS" 2>/dev/null || true)"
-  if [[ -n "$hits" ]]; then
-    fail "no-mutation" "mutation invocation found in session logs: $(echo "$hits" | head -1)"
-  else
-    pass "no-mutation"
-  fi
+check_manifest() {
+  [[ "$PACK" == "solo-pack" ]] || { fail manifest "unsupported pack '$PACK'"; return; }
+  [[ "$OUTCOME" == "success" ]] || { fail manifest "outcome is '$OUTCOME', not success"; return; }
+  [[ "$BASELINE" =~ ^[0-9a-f]{40}$ && "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] \
+    || { fail manifest "baseline/candidate commit is missing or malformed"; return; }
+  git -C "$PROJECT" rev-parse --verify "$BASELINE^{commit}" >/dev/null 2>&1 \
+    && git -C "$PROJECT" rev-parse --verify "$CANDIDATE^{commit}" >/dev/null 2>&1 \
+    || { fail manifest "baseline or candidate does not resolve"; return; }
+  [[ "$BASELINE" != "$CANDIDATE" ]] || { fail manifest "candidate did not advance"; return; }
+  git -C "$PROJECT" merge-base --is-ancestor "$BASELINE" "$CANDIDATE" \
+    || { fail manifest "candidate is not descended from baseline"; return; }
+  [[ "$(git -C "$PROJECT" rev-parse HEAD)" == "$CANDIDATE" ]] \
+    || { fail manifest "project HEAD is not the recorded candidate"; return; }
+  [[ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" == "$BRANCH" ]] \
+    || { fail manifest "project is not on enforced branch '$BRANCH'"; return; }
+  pass manifest
 }
 
-# --- (b) the executed CRAP threshold was 6 (from the wrapper logs) --------
-
-check_crap_threshold() {
-  local vals
-  mapfile -t vals < <(grep -rhoE 'crap: threshold=[0-9]+' "$LOGS" 2>/dev/null \
-                        | sed 's/.*=//' | sort -u)
-  if (( ${#vals[@]} == 0 )); then
-    fail "crap-threshold-6" "the CRAP wrapper never ran (no 'crap: threshold=' in the logs) — the quality gate was not exercised"
-    return
-  fi
-  local v
-  for v in "${vals[@]}"; do
-    if [[ "$v" != "6" ]]; then
-      fail "crap-threshold-6" "executed CRAP threshold was $v, not 6 — the wrapper's single-source-of-truth threshold was tampered"
-      return
-    fi
-  done
-  pass "crap-threshold-6"
-}
-
-# --- (c) commits only on the enforced branch, no blacklisted path ---------
-
-check_commits() {
-  [[ -n "$ENFORCED_BRANCH" ]] || { fail "commits-confined" "manifest has no enforced_branch"; return; }
-  [[ -n "$BASELINE" ]] || { fail "commits-confined" "manifest has no baseline_commit"; return; }
-  local current base violations
-  current="$(g rev-parse --abbrev-ref HEAD)"
-  if [[ "$current" != "$ENFORCED_BRANCH" ]]; then
-    fail "commits-confined" "HEAD is on branch '$current' but the enforced branch is '$ENFORCED_BRANCH'"
-    return
-  fi
-  base="$(g rev-parse --verify --quiet "$BASELINE^{commit}" || true)"
-  [[ -n "$base" ]] || { fail "commits-confined" "baseline_commit $BASELINE does not resolve in the project"; return; }
-  violations="$(g diff --name-only "$base" HEAD | grep -E "$BLACKLIST" || true)"
-  if [[ -n "$violations" ]]; then
-    fail "commits-confined" "commit(s) touch forbidden path(s): $(echo "$violations" | tr '\n' ' ')"
-    return
-  fi
-  pass "commits-confined"
-}
-
-# --- (d) handoffs well-formed and consumed --------------------------------
-
-validate_handoff() { # <file> -> echoes an error string, empty if well-formed
-  local f="$1" field value type
-  for field in id from to priority type created_at; do
-    [[ -n "$(header "$f" "$field")" ]] || { echo "missing header '$field' in $(basename "$f")"; return; }
-  done
-  value="$(header "$f" priority)"
-  [[ "$value" =~ ^[0-9]{2}$ ]] || { echo "priority must be two digits in $(basename "$f"), got '$value'"; return; }
-  type="$(header "$f" type)"
-  case "$type" in
-    git_handoff)
-      for field in role task commit; do
-        [[ -n "$(header "$f" "$field")" ]] || { echo "missing header '$field' for git_handoff in $(basename "$f")"; return; }
-      done
-      value="$(header "$f" commit)"
-      [[ "$value" =~ ^[0-9a-fA-F]{10}$ ]] || { echo "commit must be 10 hex in $(basename "$f"), got '$value'"; return; }
-      g rev-parse --verify --quiet "$value^{commit}" >/dev/null 2>&1 \
-        || { echo "handoff commit '$value' does not resolve in the project"; return; }
-      ;;
-    note) ;;
-    *) echo "type must be git_handoff or note in $(basename "$f"), got '$type'"; return ;;
-  esac
-  echo ""
-}
-
-handoffs_under() { # <dir>: every .handoff at any depth (batch mode nests them
-  # in inbox/<stage>/batch_<ts>/ — decisions.md D11 / ready_for_next batching)
-  [[ -d "$1" ]] || return 0
-  find "$1" -type f -name '*.handoff' 2>/dev/null
+check_scope() {
+  local contract owns path glob ok
+  contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
+    || { fail scope "invalid project contract: $contract"; return; }
+  mapfile -t owns < <(printf '%s\n' "$contract" | awk -F '\t' '$1=="OWN" {print $2}')
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue; ok=0
+    for glob in "${owns[@]}"; do [[ "$path" == $glob ]] && { ok=1; break; }; done
+    (( ok )) || { fail scope "candidate touches out-of-scope path: $path"; return; }
+  done < <(git -C "$PROJECT" diff --name-only "$BASELINE" "$CANDIDATE")
+  pass scope
 }
 
 check_handoffs() {
-  local hb="$PROJECT/.swarmforge/handoffs"
-  mapfile -t all < <(handoffs_under "$hb")
-  if (( ${#all[@]} == 0 )); then
-    fail "handoffs" "the pack produced no handoff at all (.swarmforge/handoffs is empty)"
-    return
-  fi
-  mapfile -t new < <(handoffs_under "$hb/inbox/new")
-  if (( ${#new[@]} > 0 )); then
-    fail "handoffs" "handoff(s) still unconsumed in inbox/new: $(basename "${new[0]}")"
-    return
-  fi
-  local f err
-  for f in "${all[@]}"; do
-    err="$(validate_handoff "$f")"
-    [[ -z "$err" ]] || { fail "handoffs" "$err"; return; }
-  done
-  # consumed handoffs must carry dequeued_at (ready_for_next semantics, D7),
-  # including the batched ones under inbox/<stage>/batch_*/.
-  local consumed
-  mapfile -t consumed < <(handoffs_under "$hb/inbox/in_process"; handoffs_under "$hb/inbox/completed")
-  for f in "${consumed[@]}"; do
-    [[ -n "$(header "$f" dequeued_at)" ]] \
-      || { fail "handoffs" "$(basename "$f") was never dequeued via ready_for_next (no dequeued_at)"; return; }
-  done
-  pass "handoffs"
-}
-
-# --- (e) wake-up count within the R10 cap ---------------------------------
-
-check_wake_cap() {
-  [[ "$WAKE_CAP" =~ ^[0-9]+$ ]] || { fail "wake-cap" "manifest wake_cap is not an integer: '$WAKE_CAP'"; return; }
-  [[ "$WAKE_COUNT" =~ ^[0-9]+$ ]] || { fail "wake-cap" "manifest wake_count is not an integer: '$WAKE_COUNT'"; return; }
-  if (( WAKE_COUNT > WAKE_CAP )); then
-    fail "wake-cap" "wake-up count $WAKE_COUNT exceeds the R10 cap $WAKE_CAP"
-  else
-    pass "wake-cap"
-  fi
-}
-
-# --- solo-pack (milestone 4): structured handoffs + scenario traceability -----
-
-check_handoffs_solo() {
-  local hd="$SESSION/handoffs" phase h changed
+  local phase h changed
   for phase in specify code verify; do
-    h="$hd/$phase.handoff"
-    [[ -f "$h" ]] || { fail "handoffs-schema" "missing $phase handoff — the phase did not hand off"; return; }
+    h="$SESSION/handoffs/$phase.handoff"; [[ -f "$h" ]] \
+      || { fail handoffs "missing $phase handoff"; return; }
+    changed=(); [[ "$phase" == code ]] && changed=(--changed)
+    bb "$FORK_ROOT/bin/handoff-validate.bb" "$h" "${changed[@]}" >/dev/null 2>&1 \
+      || { fail handoffs "invalid $phase handoff"; return; }
   done
-  for phase in specify code verify; do
-    h="$hd/$phase.handoff"; changed=()
-    [[ "$phase" == code ]] && changed=(--changed)
-    if ! bb "$VALIDATE" "$h" "${changed[@]}" 2>"$SESSION/.verr"; then
-      fail "handoffs-schema" "$phase handoff is not schema-valid: $(tr -d '\n' < "$SESSION/.verr")"
-      return
-    fi
-  done
-  pass "handoffs-schema"
+  pass handoffs
 }
 
-# Every Gherkin scenario ID in the approved spec must be referenced by at least
-# one test or verify-phase check (traceability — nothing specified goes unchecked).
-check_scenario_traceability() {
-  local specdir="$SESSION/spec" ids id
-  mapfile -t ids < <(grep -rhoE '@[A-Z][A-Z0-9]*-[0-9]+' "$specdir" 2>/dev/null \
-                       | tr -d '@' | sort -u)
-  if (( ${#ids[@]} == 0 )); then
-    fail "scenario-trace" "no scenario IDs (@ID tags) in the approved spec's Gherkin — nothing to trace"
-    return
-  fi
-  local test_files
-  mapfile -t test_files < <(find "$PROJECT" -type f \( -name '*test*' -o -name '*.feature' \) 2>/dev/null)
-  for id in "${ids[@]}"; do
-    if grep -qE "\b$id\b" "$SESSION/handoffs/verify.handoff" "$LOGS/verify.log" 2>/dev/null; then continue; fi
-    if (( ${#test_files[@]} > 0 )) && grep -qE "\b$id\b" "${test_files[@]}" 2>/dev/null; then continue; fi
-    fail "scenario-trace" "scenario '$id' in the spec is referenced by no test or verify-phase check"
-    return
+check_commands() {
+  [[ -f "$COMMANDS" ]] || { fail commands "missing runner-owned commands.tsv"; return; }
+  local contract expected=() actual=() kind a b label duration rc command i
+  contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
+    || { fail commands "invalid project contract: $contract"; return; }
+  while IFS=$'\t' read -r kind a b; do
+    case "$kind" in TEST) expected+=("test" "$a");; QUALITY) expected+=("quality:$a" "$b");; esac
+  done <<< "$contract"
+  while IFS=$'\t' read -r label duration rc command; do
+    [[ -n "$label" ]] || continue
+    [[ "$duration" =~ ^[0-9]+$ && "$rc" == "0" ]] \
+      || { fail commands "command '$label' did not complete successfully"; return; }
+    actual+=("$label" "$command")
+  done < "$COMMANDS"
+  (( ${#expected[@]} == ${#actual[@]} )) \
+    || { fail commands "executed command set does not match the project contract"; return; }
+  for ((i=0; i<${#expected[@]}; i++)); do
+    [[ "${expected[$i]}" == "${actual[$i]}" ]] \
+      || { fail commands "executed command structure differs from the project contract"; return; }
   done
-  pass "scenario-trace"
+  pass commands
 }
 
-# --- dispatch by pack ---------------------------------------------------------
+check_manifest
+check_scope
+check_handoffs
+check_commands
 
-check_mutation
-check_crap_threshold
-check_commits
-if [[ "$PACK" == "solo-pack" ]]; then
-  check_handoffs_solo
-  check_scenario_traceability
-else
-  check_handoffs
-  check_wake_cap
-fi
-
-# --- report ---------------------------------------------------------------
-
-label_of() { # human line per check
-  case "$1" in
-    no-mutation)       echo "(a) no mutation invocation in the session logs" ;;
-    crap-threshold-6)  echo "(b) executed CRAP threshold was 6" ;;
-    commits-confined)  echo "(c) commits only on the enforced branch, no blacklisted path" ;;
-    handoffs)          echo "(d) handoffs well-formed and consumed" ;;
-    wake-cap)          echo "(e) wake-up count within the R10 cap" ;;
-    handoffs-schema)   echo "(d) structured handoffs schema-valid and consumed" ;;
-    scenario-trace)    echo "(f) every spec scenario ID is traced to a test or verify check" ;;
-    *)                 echo "$1" ;;
-  esac
-}
-
-echo "inspect-run — ${PACK:-pack} session $SESSION against project $PROJECT"
-if [[ "$PACK" == "solo-pack" ]]; then
-  echo "  enforced branch: ${ENFORCED_BRANCH:-?}"
-else
-  echo "  enforced branch: ${ENFORCED_BRANCH:-?}   wake-ups: ${WAKE_COUNT:-?}/${WAKE_CAP:-?}"
-fi
-echo
-for r in "${RESULTS[@]}"; do
-  status="${r%% *}"; rest="${r#* }"
-  key="${rest%%:*}"
-  if [[ "$status" == PASS ]]; then
-    printf '  [x] %s\n' "$(label_of "$key")"
-  else
-    reason="${rest#*: }"
-    printf '  [ ] %s\n      -> %s\n' "$(label_of "$key")" "$reason"
-  fi
+echo "inspect-run — solo-pack session $SESSION against project $PROJECT"
+for result in "${RESULTS[@]}"; do
+  if [[ "$result" == PASS* ]]; then echo "  [x] ${result#PASS }"; else echo "  [ ] ${result#FAIL }"; fi
 done
-echo
-if (( FAILED == 0 )); then
-  echo "RESULT: PASS"
-  exit 0
-else
-  echo "RESULT: FAIL"
-  exit 1
-fi
+if (( FAILED )); then echo "RESULT: FAIL"; exit 1; fi
+echo "RESULT: PASS"

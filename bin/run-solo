@@ -3,7 +3,7 @@
 #
 #   run-solo --project <path> --adapter <name-or-dir>
 #            [--approval-timeout <s>] [--phase-timeout <s>]
-#            [--retry-cap <n>] [--run-timeout <s>]
+#            [--retry-cap <n>] [--run-timeout <s>] [--command-timeout <s>]
 #
 # The solo-pack: a sequential runner of our own — no tmux, no daemon. Three
 # phases, each a fresh headless `invoke` (adapters/CONTRACT.md Mode 1) in its own
@@ -13,7 +13,7 @@
 #   specify   — produces spec + documental Gherkin (scenario IDs); then the run
 #               PAUSES for the owner's approval (R6). No auto-approve path.
 #   code      — implements the approved spec, commits the candidate on the
-#               enforced branch; quality via the crap.sh/dry.sh wrappers only.
+#               enforced branch; project gates are later executed by the runner.
 #   verify    — runs in a clean git worktree checked out at the CANDIDATE commit
 #               (B3), inputs restricted to spec + diff + handoffs + tool output.
 #
@@ -27,12 +27,12 @@ set -euo pipefail
 FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 die() { echo "run-solo: $*" >&2; exit 1; }
 usage() {
-  echo "usage: run-solo --project <path> --adapter <name-or-dir> [--pack <branch>] [--approval-timeout <s>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>]" >&2
+  echo "usage: run-solo --project <path> --adapter <name-or-dir> [--pack <branch>] [--approval-timeout <s>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>] [--command-timeout <s>]" >&2
   exit 2
 }
 
 PROJECT=""; ADAPTER=""; PACK="solo-pack"; APPROVAL_TIMEOUT=0
-PHASE_TIMEOUT=0; RETRY_CAP=1; RUN_TIMEOUT=0
+PHASE_TIMEOUT=0; RETRY_CAP=1; RUN_TIMEOUT=0; COMMAND_TIMEOUT=600
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project) PROJECT="${2:-}"; shift 2 ;;
@@ -42,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --phase-timeout) PHASE_TIMEOUT="${2:-}"; shift 2 ;;
     --retry-cap) RETRY_CAP="${2:-}"; shift 2 ;;
     --run-timeout) RUN_TIMEOUT="${2:-}"; shift 2 ;;
+    --command-timeout) COMMAND_TIMEOUT="${2:-}"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -53,17 +54,33 @@ done
 # workdir) would make the two diverge.
 PROJECT="$(cd "$PROJECT" && pwd)"
 command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+[[ "$COMMAND_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--command-timeout must be a positive integer"
 
 # R6 precondition: an approved task.md must exist before any phase runs.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
 
-# R4/R9 owned-path contract (D17/D19): project.prompt's `owns:` block is the
-# machine-readable set the candidate commit is scoped to. Validate it up front so
-# a malformed contract is a fail-closed stop BEFORE any phase runs — the actual
-# scope enforcement happens after the code phase (enforce_owned_scope). A missing
-# file or no owns: block is "no allowlist" and passes (backward compatible).
-bash "$FORK_ROOT/bin/parse-owns" "$PROJECT/project.prompt" >/dev/null \
-  || die "malformed owned-path contract in $PROJECT/project.prompt (owns: block); fix it before running"
+# D27: the real-project contract is required and fail-closed. It supplies the
+# owned paths, exact test command, and optional ordered quality commands.
+CONTRACT_PARSER="$FORK_ROOT/bin/parse-project"
+CONTRACT_OUT="$(bash "$CONTRACT_PARSER" "$PROJECT/project.prompt" 2>&1)" \
+  || die "invalid project contract — $CONTRACT_OUT"
+declare -a PROJECT_OWNS=() QUALITY_NAMES=() QUALITY_COMMANDS=()
+PROJECT_TEST_CMD=""
+while IFS=$'\t' read -r kind a b; do
+  case "$kind" in
+    OWN) PROJECT_OWNS+=("$a") ;;
+    TEST) PROJECT_TEST_CMD="$a" ;;
+    QUALITY) QUALITY_NAMES+=("$a"); QUALITY_COMMANDS+=("$b") ;;
+  esac
+done <<< "$CONTRACT_OUT"
+(( ${#PROJECT_OWNS[@]} > 0 )) || die "invalid project contract — no owned paths"
+[[ -n "$PROJECT_TEST_CMD" ]] || die "invalid project contract — no test command"
+
+# Pre-existing tracked edits can be swept into the agent's candidate and cannot
+# be attributed to this run. Untracked files are allowed; the owned-scope check
+# still rejects them if the agent commits them outside the contract.
+git -C "$PROJECT" diff --quiet && git -C "$PROJECT" diff --cached --quiet \
+  || die "tracked working tree is dirty — commit or stash tracked changes before running"
 
 # --- adapter resolution (same rule as run-scenario) -------------------------
 case "$ADAPTER" in
@@ -113,6 +130,7 @@ APPROVAL="$STATE/approval"
 PROMPTS="$STATE/prompts"
 MANIFEST="$STATE/manifest.json"
 PHASES_TSV="$STATE/phases.tsv"
+COMMANDS_TSV="$STATE/commands.tsv"
 STATUS="$STATE/status"
 FAILURE="$STATE/failure"
 VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
@@ -161,6 +179,7 @@ write_manifest() { # <outcome>
     "baseline_commit=$(cat "$STATE/baseline_commit" 2>/dev/null || echo '?')"
     "candidate_commit=$(cat "$STATE/candidate_commit" 2>/dev/null || echo '')"
     "retry_cap=$RETRY_CAP" "phase_timeout_s=$PHASE_TIMEOUT" "run_timeout_s=$RUN_TIMEOUT"
+    "command_timeout_s=$COMMAND_TIMEOUT"
     "outcome=$1"
   )
   bb "$MANIFEST_BB" "${args[@]}" >/dev/null
@@ -209,16 +228,9 @@ EOF
 # The project's declared test command (D22). A single strict `test:` line in
 # project.prompt, e.g. `test: mvn -q test -pl src/core`. run-solo injects it into
 # the code/verify prompts (below) so those phases target the PROJECT's own test
-# entrypoint, never the harness toy ./test.sh. Absent/empty ⇒ default ./test.sh
-# (backward compatible — toy projects carry no project.prompt).
+# entrypoint, never a harness toy default. The strict contract is required.
 project_test_cmd() {
-  local f="$PROJECT/project.prompt" cmd=""
-  if [[ -f "$f" ]]; then
-    cmd="$(sed -n 's/^test:[[:space:]]*//p' "$f" | head -1)"
-    cmd="${cmd%"${cmd##*[![:space:]]}"}"   # rtrim any trailing whitespace
-  fi
-  [[ -n "$cmd" ]] || cmd="./test.sh"
-  printf '%s' "$cmd"
+  printf '%s' "$PROJECT_TEST_CMD"
 }
 
 # Injected into the code/verify prompts (D22) as a literal TEST_CMD line — the
@@ -262,16 +274,12 @@ run_phase() { # <name> <workdir> ; returns 0 ok / non-zero on invoke failure
   if [[ "$PHASE_TIMEOUT" -gt 0 ]]; then
     runner=(bash "$FORK_ROOT/adapters/run-with-timeout" "$PHASE_TIMEOUT" -- "${runner[@]}")
   fi
-  PATH="$FORK_ROOT/tools/toy:$PATH" \
-  CRAFT_CRAP="$FORK_ROOT/tools/toy/crap.sh" \
-  CRAFT_DRY="$FORK_ROOT/tools/toy/dry.sh" \
   SOLO_HANDOFF="$HANDOFFS/$name.handoff" \
   SOLO_SPEC_DIR="$SPEC" \
   SOLO_PHASE="$name" \
   SOLO_PROJECT="$PROJECT" \
   SOLO_DIFF="$STATE/diff.patch" \
   SOLO_HANDOFFS_DIR="$HANDOFFS" \
-  CRAFT_WRAPPER_LOG="$LOGS/wrappers.log" \
     "${runner[@]}" > "$LOGS/$name.log" 2>&1 || rc=$?
   return $rc
 }
@@ -308,13 +316,7 @@ record_phase() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$PHASES_TSV"; }
 # paths in project.prompt's owns: set. run-solo does NOT author the commit (the
 # agent does — that is D17's root), so we do not silently re-scope it: we FAIL the
 # run here, before verify ever judges the commit (R4), naming the offending paths.
-# No owns-set => no restriction (the check is a no-op, backward compatible).
 enforce_owned_scope() {
-  local owns_out
-  owns_out="$(bash "$FORK_ROOT/bin/parse-owns" "$PROJECT/project.prompt" 2>"$STATE/.ownserr")" \
-    || fail_phase code "malformed owned-path contract — $(tr -d '\n' < "$STATE/.ownserr")"
-  [[ -n "$owns_out" ]] || return 0
-  local -a owns=(); mapfile -t owns <<< "$owns_out"
   local baseline candidate
   baseline="$(cat "$STATE/baseline_commit")"
   candidate="$(cat "$STATE/candidate_commit")"
@@ -323,11 +325,11 @@ enforce_owned_scope() {
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
     ok=0
-    for g in "${owns[@]}"; do [[ "$path" == $g ]] && { ok=1; break; }; done
+    for g in "${PROJECT_OWNS[@]}"; do [[ "$path" == $g ]] && { ok=1; break; }; done
     (( ok )) || offenders+=("$path")
   done < <(git -C "$PROJECT" diff --name-only "$baseline" "$candidate")
   if (( ${#offenders[@]} > 0 )); then
-    fail_phase code "candidate commit touches paths outside the owned set (owns: ${owns[*]}); offending paths: ${offenders[*]}"
+    fail_phase code "candidate commit touches paths outside the owned set (owns: ${PROJECT_OWNS[*]}); offending paths: ${offenders[*]}"
   fi
 }
 
@@ -335,6 +337,7 @@ enforce_owned_scope() {
 start_fresh() {
   mkdir -p "$SPEC" "$HANDOFFS" "$LOGS" "$APPROVAL" "$PROMPTS"
   : > "$PHASES_TSV"
+  : > "$COMMANDS_TSV"
   git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$STATE/enforced_branch"
   git -C "$PROJECT" rev-parse HEAD > "$STATE/baseline_commit"
   seed_prompts
@@ -385,6 +388,24 @@ ensure_commit_identity() {
   git -C "$PROJECT" config user.email "noreply@craft-harness.local"
 }
 
+run_project_command() { # <label> <exact shell command> <candidate workdir>
+  local label="$1" command="$2" wd="$3" safe rc=0 start duration
+  safe="${label//:/-}"
+  start="$(date +%s)"
+  set_status "running_$safe"
+  bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
+    bash -c 'cd "$1" && exec bash -c "$2"' _ "$wd" "$command" \
+    > "$LOGS/command-$safe.log" 2>&1 || rc=$?
+  duration=$(( $(date +%s) - start ))
+  printf '%s\t%s\t%s\t%s\n' "$label" "$duration" "$rc" "$command" >> "$COMMANDS_TSV"
+  if (( rc != 0 )); then
+    if (( rc == 124 )); then
+      fail_phase "$label" "declared command timed out after ${COMMAND_TIMEOUT}s: $command"
+    fi
+    fail_phase "$label" "declared command failed (rc=$rc): $command"
+  fi
+}
+
 # --- code + verify (after approval) -----------------------------------------
 run_code_and_verify() {
   local start
@@ -401,6 +422,10 @@ run_code_and_verify() {
   local candidate; candidate="$(cat "$STATE/candidate_commit")"
   local baseline; baseline="$(cat "$STATE/baseline_commit")"
   [[ "$candidate" != "$baseline" ]] || fail_phase code "no candidate commit produced (HEAD unchanged)"
+  [[ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" == "$(cat "$STATE/enforced_branch")" ]] \
+    || fail_phase code "agent switched away from the enforced branch"
+  git -C "$PROJECT" merge-base --is-ancestor "$baseline" "$candidate" \
+    || fail_phase code "candidate is not descended from the recorded baseline"
 
   # R4/R9 (D17/D19): scope the candidate to the owned-path set BEFORE verify.
   enforce_owned_scope
@@ -427,12 +452,34 @@ run_code_and_verify() {
   finalize_handoff verify done
   validate_phase_handoff verify
   record_phase verify "$(( $(date +%s) - start ))" ok
+  if [[ -n "$(git -C "$vwd" status --porcelain --untracked-files=all)" ]]; then
+    fail_phase verify "verifier modified its supposedly read-only candidate worktree"
+  fi
   git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
   VWD=""
 
+  # Runner-owned gates (D27): recreate a clean candidate worktree after every
+  # agent has finished, then execute the exact project commands ourselves.
+  VWD="$STATE/gate-workdir"
+  git -C "$PROJECT" worktree add --detach "$VWD" "$candidate" >/dev/null 2>&1 \
+    || fail_phase test "could not create command worktree at $candidate"
+  run_project_command test "$PROJECT_TEST_CMD" "$VWD"
+  local i
+  for ((i=0; i<${#QUALITY_NAMES[@]}; i++)); do
+    run_project_command "quality:${QUALITY_NAMES[$i]}" "${QUALITY_COMMANDS[$i]}" "$VWD"
+  done
+  git -C "$PROJECT" worktree remove --force "$VWD" 2>/dev/null || true
+  VWD=""
+
+  set_status "inspecting"
+  write_manifest "success"
+  if ! bash "$FORK_ROOT/bin/inspect-run" "$STATE" "$PROJECT" > "$STATE/inspect-report.txt" 2>&1; then
+    fail_phase inspect "post-run inspector rejected the evidence (see $STATE/inspect-report.txt)"
+  fi
   set_status "done"
   write_manifest "success"
-  echo "run-solo: SUCCESS — all phases complete; evidence under $STATE"
+  cat "$STATE/inspect-report.txt"
+  echo "run-solo: SUCCESS — all phases and runner-owned gates complete; evidence under $STATE"
 }
 
 # --- dispatch ---------------------------------------------------------------

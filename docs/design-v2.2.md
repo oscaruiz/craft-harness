@@ -2,6 +2,12 @@
 
 Changes vs v2.1: second validation round (2 independent judges + defender-classifier + triage over raw verdicts + verifications executed against the swarm-forge source). Design owner's approval recorded, including her ruling on R1. Triage log in §9.
 
+> **Post-freeze correction:** D27 found that several claimed gates were still
+> toy-blind; D28 supersedes the affected operational design. Solo-pack is the
+> supported light path, project scope/test commands are required, declared
+> test/quality commands are executed by the runner at the candidate, and
+> transcript-derived mutation/CRAP/traceability assertions are not verdicts.
+
 ---
 
 ## 1. Requirements (v2.2)
@@ -57,9 +63,9 @@ Wrappers with auto-detection (pom.xml/package.json) + a flag override for ambigu
 
 ## 5. Packs
 
-- **two-pack-lite (daily-driver candidate):** coder → cleaner with our own `cleaner.prompt` (no mutation). `task.md` contract enforced by the launcher, protected by pre-commit.
-- **solo-pack (daily-driver candidate, sequential):** N phases, each a fresh CLI process with no inherited transcript. **Mandatory structured handoff** (done / decisions / assumptions / open items / commands executed) — direct heir of the original harness's `progress/` files. The verifier runs in a clean worktree checked out from the **candidate commit**. A sequential runner of our own (no daemon/tmux); its size will be known when it exists.
-- **Survival checkpoint:** after trying both on real tasks (milestones 3–4), ONE light path is kept and the other archived. Two permanent light paths is structural duplication.
+- **two-pack-lite (retired by D28):** preserved in history, not registered or runnable.
+- **solo-pack (supported light path):** fresh process per phase, mandatory structured handoffs, verifier at the candidate, followed by runner-owned execution of the required project test and optional named quality commands, then automatic inspection.
+- **Survival checkpoint:** closed by D28 in favor of solo-pack.
 - **six-pack (core domain):** full pipeline, specifier's human gate, executable Gherkin, QA-Playwright for TS. No Gherkin mutation in v0.1.
 
 ## 6. Live risks

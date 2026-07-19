@@ -46,6 +46,8 @@
     (git! dir "config" "user.email" "toy@example.com")
     (git! dir "config" "user.name" "Toy User")
     (write-file (fs/path dir "task.md") "Make ./test.sh pass: sut.sh must print 42.\n")
+    (write-file (fs/path dir "project.prompt")
+                "Project: toy fixture.\nowns:\n  sut.sh\ntest: ./test.sh\n")
     (write-file (fs/path dir "sut.sh") "#!/usr/bin/env bash\necho broken\n")
     (write-file (fs/path dir "test.sh")
                 "#!/usr/bin/env bash\nset -euo pipefail\n[[ \"$(bash ./sut.sh)\" == \"42\" ]]\n")
@@ -152,6 +154,46 @@
     (testing "the session is no longer in flight"
       (is (= "done" (status p))))))
 
+(deftest verifier-claim-cannot-bypass-runner-owned-test
+  (testing "a verifier that claims pass without running a failing test cannot make the run green"
+    (let [p (make-project!)
+          r1 (run-solo! p "falseclaim")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "falseclaim")]
+      (is (not (zero? (:exit r2))))
+      (is (re-find #"phase 'test'.*declared command failed" (:all r2)))
+      (is (= "failed" (status p)))
+      (is (str/includes? (slurp (str (fs/path (state p) "commands.tsv")))
+                         "test\t")))))
+
+(deftest declared-quality-commands-are-run-in-order-and-enforced
+  (let [p (make-project!)]
+    (write-file (fs/path p "project.prompt")
+                (str "owns:\n  sut.sh\ntest: ./test.sh\nquality:\n"
+                     "  first: test -f sut.sh\n  second: grep -q 42 sut.sh\n"))
+    (git! p "add" "project.prompt")
+    (git! p "commit" "-q" "-m" "test: declare quality gates")
+    (let [r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")
+          records (str/split-lines (slurp (str (fs/path (state p) "commands.tsv"))))]
+      (is (zero? (:exit r2)) (:all r2))
+      (is (= ["test" "quality:first" "quality:second"]
+             (mapv #(first (str/split % #"\t")) records))))))
+
+(deftest failing-quality-command-stops-before-success
+  (let [p (make-project!)]
+    (write-file (fs/path p "project.prompt")
+                "owns:\n  sut.sh\ntest: ./test.sh\nquality:\n  architecture: false\n")
+    (git! p "add" "project.prompt")
+    (git! p "commit" "-q" "-m" "test: declare failing quality gate")
+    (let [r1 (run-solo! p "happy")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo! p "happy")]
+      (is (not (zero? (:exit r2))))
+      (is (re-find #"phase 'quality:architecture'" (:all r2)))
+      (is (= "failed" (status p))))))
+
 ;; --- end-to-end: a completed solo run inspects green -------------------------
 
 (deftest completed-run-inspects-green
@@ -167,8 +209,9 @@
           out (str (:out r) (:err r))]
       (is (zero? (:exit r)) (str "the solo inspector must be green on a real run-solo session:\n" out))
       (is (str/includes? out "RESULT: PASS"))
-      (testing "the wrappers ran at threshold 6, durably captured"
-        (is (str/includes? (slurp (str (fs/path (state p) "logs" "wrappers.log"))) "crap: threshold=6"))))))
+      (testing "the runner recorded its exact successful test command"
+        (is (str/includes? (slurp (str (fs/path (state p) "commands.tsv")))
+                           "test\t"))))))
 
 ;; --- a phase's invalid handoff stops the run with attribution ----------------
 
@@ -306,7 +349,9 @@
 
 (defn write-owns! [project block]
   (write-file (fs/path project "project.prompt")
-              (str "Project role prompt — prose the agent reads.\n\nowns:\n" block "\n")))
+              (str "Project role prompt — prose the agent reads.\n\nowns:\n" block "\ntest: ./test.sh\n"))
+  (git! project "add" "project.prompt")
+  (git! project "commit" "-q" "-m" "test: update project contract"))
 
 (defn candidate-touched
   "Paths the candidate commit changed vs the baseline commit `base`."
@@ -367,8 +412,8 @@
 (deftest a-malformed-owned-path-contract-stops-the-run-early
   (testing "a malformed owns: block fails fast (fail-closed), before any phase runs"
     (let [p (make-project!)
-          base (head p)
           _ (write-owns! p "  ../escape/**")     ; traversal — malformed
+          base (head p)
           r (run-solo! p "happy")]
       (is (not (zero? (:exit r))) "a malformed contract must stop the run")
       (is (re-find #"(?i)owns|owned|contract|project\.prompt" (:all r)))
@@ -509,17 +554,16 @@
             (is (str/includes? h "mvn -q -pl src/core test"))
             (is (not (re-find #"(?i)\./test\.sh" h)))))))))
 
-(deftest absent-test-declaration-defaults-to-the-toy-command
-  (testing "a project with no `test:` line still runs (default ./test.sh) — backward compatible"
-    (let [p (make-project!)                  ; toy project, no project.prompt
-          r1 (run-solo! p "happy")
-          _ (approve! p (approval-token r1))
-          r2 (run-solo! p "happy")]
-      (is (zero? (:exit r2)) (str "the toy default path must still complete:\n" (:all r2)))
-      (is (= "done" (status p)))
-      (let [prompt (slurp (str (fs/path (state p) "prompts" "verify.prompt")))]
-        (is (str/includes? prompt "TEST_CMD: ./test.sh")
-            "with no declaration the injected command defaults to ./test.sh")))))
+(deftest absent-test-declaration-fails-closed
+  (testing "a project with no `test:` line is rejected before any phase"
+    (let [p (make-project!)]
+      (write-file (fs/path p "project.prompt") "owns:\n  sut.sh\n")
+      (git! p "add" "project.prompt")
+      (git! p "commit" "-q" "-m" "test: remove test command")
+      (let [r (run-solo! p "happy")]
+        (is (not (zero? (:exit r))))
+        (is (re-find #"(?i)test.*missing|invalid project contract" (:all r)))
+        (is (not (fs/exists? (state p))))))))
 
 ;; --- m4.8 / D23: inherit-env — commit identity + toolchain reachability ------
 ;; run-solo must guarantee the code phase can author its commit even when the

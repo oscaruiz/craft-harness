@@ -59,6 +59,7 @@
   (let [fork (fs/path (tmp-dir) "fork")]
     (fs/copy-tree repo-root fork)
     (fs/delete-tree (fs/path fork ".git"))
+    (write-file (fs/path fork "PACKS") (str pack-branch "\n"))
     (git! fork "init" "-q" "-b" "main")
     (git! fork "config" "user.email" "test@example.com")
     (git! fork "config" "user.name" "Test User")
@@ -77,6 +78,7 @@
     (git! toy "config" "user.name" "Toy User")
     (write-file (fs/path toy "README.md") "toy project\n")
     (write-file (fs/path toy "task.md") "Toy task: exercise the launcher.\n")
+    (write-file (fs/path toy "project.prompt") "owns:\n  **\ntest: true\n")
     (git! toy "add" "-A")
     (git! toy "commit" "-q" "-m" "toy baseline")
     toy))
@@ -254,15 +256,16 @@
       (is (not= 0 (:exit res)) "a malformed owns: block must refuse the commit (fail-closed)")
       (is (re-find #"(?i)owns|owned|contract" (str (:out res) (:err res)))))))
 
-(deftest pre-commit-without-owns-keeps-blacklist-only-behavior
-  (testing "no project.prompt => any non-blacklisted path commits (backward compatible)"
+(deftest pre-commit-without-owns-fails-closed
+  (testing "no project.prompt => the required containment contract rejects commits"
     (let [fork (make-fork!) toy (make-toy!)]
       (install! fork toy)
+      (fs/delete (fs/path toy "project.prompt"))
       (write-file (fs/path toy "anywhere" "file.txt") "no allowlist declared\n")
       (git! toy "add" "anywhere/file.txt")
       (let [res (sh-run {:dir toy :ok? false} "git" "commit" "-q" "-m" "unowned but allowed")]
-        (is (= 0 (:exit res))
-            (str "with no owns: block, an arbitrary path must commit: " (:out res) (:err res)))))))
+        (is (not= 0 (:exit res)))
+        (is (re-find #"(?i)project\.prompt|owns|contract" (str (:out res) (:err res))))))))
 
 ;; --- exit criterion 4: run refuses over an in-flight session ------------
 

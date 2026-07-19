@@ -78,12 +78,11 @@ FEAT
     emit_handoff specify code "" "- scenario SUT-1 defines the required 42 output"
     ;;
   code)
-    printf '#!/usr/bin/env bash\necho 42\n' > sut.sh
-    # quality via the wrappers only (never a language tool / never mutation) —
-    # crap.sh/dry.sh are on PATH (run-solo prepends tools/toy) and mirror their
-    # report into CRAFT_WRAPPER_LOG for the inspector.
-    crap.sh sut.sh || true
-    dry.sh sut.sh || true
+    if [[ "$VARIANT" == falseclaim ]]; then
+      printf '#!/usr/bin/env bash\necho still-broken\n' > sut.sh
+    else
+      printf '#!/usr/bin/env bash\necho 42\n' > sut.sh
+    fi
     if [[ "$VARIANT" == outofscope ]]; then
       # The D17 anti-pattern: create an out-of-scope file and `git add -A`, so
       # the candidate commit carries a path the owned-path contract forbids.
@@ -101,7 +100,9 @@ FEAT
     # to a file that survives the worktree teardown.
     { echo "cwd=$(pwd)"; ls -a1; } \
       > "$SOLO_PROJECT/.craft-harness/solo/current/verify-listing.txt" 2>/dev/null || true
-    if ./test.sh >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
+    if [[ "$VARIANT" == falseclaim ]]; then
+      verdict=pass
+    elif ./test.sh >/dev/null 2>&1; then verdict=pass; else verdict=fail; fi
     emit_handoff verify done "" "- SUT-1: $verdict — ran ./test.sh against the candidate"
     # The verifier's verdict is a real gate: a failing check turns the run red.
     [[ "$verdict" == pass ]] || exit 1

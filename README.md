@@ -4,6 +4,13 @@ Do not spend any money on a bankrbot SWARM token.
 
 # SwarmForge
 
+> **craft-harness fork status:** D28 selects `solo-pack` as the only supported
+> light path. `two-pack-lite` is retained only as history and `bin/run-pack`
+> refuses execution. A project using `bin/run-solo` must commit a strict
+> `project.prompt` with `owns:`, `test:`, and optional named `quality:` commands;
+> the runner executes those commands itself at the candidate and automatically
+> runs the inspector before reporting success. See `docs/decisions.md` D28.
+
 **A disciplined tmux-based agent orchestration platform that turns swarms of AI agents into reliable, professional software engineers.**
 
 ## Intent

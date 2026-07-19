@@ -11,8 +11,7 @@
 #     Prose anywhere else in the file is ignored.
 #   · Each entry is a single whitespace-free token, RELATIVE (no leading '/'),
 #     with no '..' traversal.
-#   · Missing file or no owns: block ⇒ empty output, exit 0 (no allowlist —
-#     existing packs and toy projects are unaffected; backward compatible).
+#   · Missing file or no owns: block ⇒ exit 1 (D27: containment is required).
 #   · A malformed block ⇒ exit 1 with a message naming the problem (fail-closed:
 #     an unreadable contract is a stop, not a silent skip).
 #
@@ -25,7 +24,7 @@ set -euo pipefail
 # a malformed block; a missing file is "no allowlist" (empty, return 0). --------
 parse_owns() {
   local f="$1" line glob in_block=0 seen_block=0 count=0
-  [[ -f "$f" ]] || return 0
+  [[ -f "$f" ]] || { echo "parse-owns: required project.prompt not found: $f" >&2; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_block" -eq 1 ]]; then
       if [[ -z "${line//[[:space:]]/}" ]]; then in_block=0; continue; fi   # blank ends block
@@ -54,8 +53,8 @@ parse_owns() {
       echo "parse-owns: owns: must start a block (one glob per indented line, no inline value): '$line'" >&2; return 1
     fi
   done < "$f"
-  if [[ "$seen_block" -eq 1 && "$count" -eq 0 ]]; then
-    echo "parse-owns: owns: block is empty (declare at least one path glob, or remove the block)" >&2
+  if [[ "$seen_block" -eq 0 || "$count" -eq 0 ]]; then
+    echo "parse-owns: required owns: block is missing or empty" >&2
     return 1
   fi
   return 0

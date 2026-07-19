@@ -8,8 +8,8 @@ has two invocation modes:
    solo-pack's sequential phases. **Certified executable in m2** by
    `adapters/run-scenario`.
 2. **Interactive window line** — the upstream swarm-forge launch mode
-   (tmux window per role). **Documented here; certified de facto in m3**
-   when the packs run interactive windows.
+   (tmux window per role). Retained as upstream documentation; craft-harness's
+   `two-pack-lite` Mode-2 runner was retired by D28 and is not a supported path.
 
 A new adapter must cost **less than one day** (checklist at the end).
 
@@ -32,6 +32,11 @@ One agent turn:
   hook is a tripwire; the CLI's permission configuration is the containment
   layer). The adapter passes whatever flags confine writes to the workdir
   and keep the agent inside its permission envelope.
+
+For solo-pack, adapter completion is not a test verdict. After all agent turns,
+the runner independently executes the required `test:` command and every
+declared `quality:` command in a clean candidate worktree, then runs the
+inspector. Only that combined result may report success (D28).
 
 ### `info`
 

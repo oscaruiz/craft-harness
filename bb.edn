@@ -12,12 +12,11 @@
                 (require 'craft-harness.runner-test)
                 (require 'craft-harness.real-adapters-test)
                 (require 'craft-harness.wrappers-test)
-                (require 'craft-harness.inspect-run-test)
                 (require 'craft-harness.run-pack-test)
                 (require 'craft-harness.handoff-schema-test)
                 (require 'craft-harness.parse-owns-test)
+                (require 'craft-harness.project-contract-test)
                 (require 'craft-harness.run-solo-test)
-                (require 'craft-harness.inspect-solo-test)
                 (require 'craft-harness.pack-manifest-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
@@ -28,11 +27,10 @@
                                                                     'craft-harness.runner-test
                                                                     'craft-harness.real-adapters-test
                                                                     'craft-harness.wrappers-test
-                                                                    'craft-harness.inspect-run-test
                                                                     'craft-harness.run-pack-test
                                                                     'craft-harness.handoff-schema-test
                                                                     'craft-harness.parse-owns-test
+                                                                    'craft-harness.project-contract-test
                                                                     'craft-harness.run-solo-test
-                                                                    'craft-harness.inspect-solo-test
                                                                     'craft-harness.pack-manifest-test)]
                   (System/exit (+ fail error))))}}}

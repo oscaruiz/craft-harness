@@ -895,6 +895,40 @@ advisory evidence. D27 records findings only: it does not authorize a runner,
 inspector, wrapper, pack, manifest, or test-suite change, and it does not retire
 either pack.
 
+## D28 — D27 remediation: solo is the supported light path and project gates are runner-owned (2026-07-19)
+
+Owner authorized the complete remediation plan after D27. The survival
+checkpoint is now decided: `solo-pack` is the only registered light path;
+`two-pack-lite` remains in git history but its runner refuses execution. This
+removes the unvalidated tmux quiescence and fabricated-consumption path rather
+than relabelling its evidence.
+
+The per-project contract is now required and fail-closed. `project.prompt`
+must contain a non-empty `owns:` block and exactly one non-empty `test:`
+command. It may also contain an ordered `quality:` block of named commands.
+Missing, empty, duplicate, absolute/traversing, or malformed declarations stop
+the run before an agent starts. There is no `./test.sh` fallback and an absent
+owned-path contract no longer means unrestricted scope.
+
+After code, `run-solo` requires a candidate descended from the baseline on the
+enforced branch and scopes its complete diff to `owns:`. Verify still runs as a
+fresh agent in a candidate worktree, but its prose is not the verdict: verifier
+modifications are rejected, then the runner creates a fresh candidate worktree
+and executes the exact declared test and quality commands with bounded time.
+Each command, duration, exit status, and log is durable. Any non-zero exit or
+timeout fails the run. Finally `run-solo` invokes `inspect-run` itself and
+prints `SUCCESS` only after inspection passes.
+
+The inspector now accepts only solo evidence and checks the manifest/candidate
+relationship, owned scope, structured handoffs, and the exact ordered
+runner-owned command record against the current project contract. It no longer
+claims mutation absence, CRAP threshold enforcement, DRY enforcement, or
+scenario-to-test traceability from transcript/substring evidence. A project
+gets a real CRAP/DRY/architecture gate only by declaring the corresponding real
+command under `quality:`; the toy wrappers remain test utilities, not production
+verdict sources. Mutation is out of the runner's configured actions, but the
+harness makes no unauditable claim that an agent never invoked it.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

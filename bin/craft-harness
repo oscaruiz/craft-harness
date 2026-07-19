@@ -185,6 +185,8 @@ refuse_if_in_flight() { # <project> <verb>
 run_cmd() {
   [[ -n "$PROJECT" && -n "$PACK" ]] || die "run requires --project <path> and --pack <branch>"
   [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+  grep -qxF "$PACK" "$FORK_ROOT/PACKS" \
+    || die "pack '$PACK' is not registered as supported in PACKS"
   refuse_if_in_flight "$PROJECT" "run"
   [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: the launcher refuses to start without an approved task.md"
   local commit

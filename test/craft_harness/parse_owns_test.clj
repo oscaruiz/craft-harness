@@ -70,21 +70,21 @@
       (is (zero? (:exit r)))
       (is (= ["src/**"] (:globs r))))))
 
-;; --- backward compatibility: empty/missing => no allowlist -------------------
+;; --- D27: missing containment contracts fail closed -------------------------
 
-(deftest a-missing-file-is-no-allowlist
-  (testing "a project without a project.prompt has no owned-path contract"
+(deftest a-missing-file-fails-closed
+  (testing "a project without project.prompt is rejected"
     (let [d (fs/create-temp-dir {:prefix "craft-harness-owns."})
           _ (swap! *sandboxes* conj d)
           r (parse (str (fs/path d "does-not-exist.prompt")))]
-      (is (zero? (:exit r)) "a missing file is not an error — just no allowlist")
+      (is (not (zero? (:exit r))))
       (is (empty? (:globs r))))))
 
-(deftest a-file-with-no-owns-block-is-no-allowlist
-  (testing "prose-only project.prompt yields an empty allowlist"
+(deftest a-file-with-no-owns-block-fails-closed
+  (testing "prose-only project.prompt is rejected"
     (let [f (tmp-file "Just a role description. No machine-readable field here.\n")
           r (parse f)]
-      (is (zero? (:exit r)))
+      (is (not (zero? (:exit r))))
       (is (empty? (:globs r))))))
 
 ;; --- malformed blocks fail loudly (fail-closed) ------------------------------

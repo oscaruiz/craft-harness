@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Strict machine-readable project contract (D27 remediation).
+# Output records are tab-separated: OWN<TAB>glob, TEST<TAB>command,
+# QUALITY<TAB>name<TAB>command.
+set -euo pipefail
+
+die() { echo "parse-project: $*" >&2; exit 1; }
+file="${1:-}"
+[[ -n "$file" ]] || { echo "usage: parse-project <project.prompt>" >&2; exit 2; }
+[[ -f "$file" ]] || die "required project contract not found: $file"
+
+owns_seen=0; owns_count=0; quality_seen=0; quality_count=0; test_seen=0; test_cmd=""
+mode=""
+declare -a owns=() quality_names=() quality_cmds=()
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ -n "$mode" ]]; then
+    if [[ -z "${line//[[:space:]]/}" ]]; then mode=""; continue; fi
+    if [[ "$line" == [![:space:]]* ]]; then mode=""; fi
+  fi
+  if [[ "$mode" == "owns" ]]; then
+    value="$line"; value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+    [[ -n "$value" && "$value" != *[[:space:]]* ]] || die "owns entry must be one whitespace-free glob: '$value'"
+    [[ "$value" != /* && "$value" != *..* ]] || die "owns entry must be relative and contain no '..': '$value'"
+    for prior in "${owns[@]:-}"; do [[ "$prior" != "$value" ]] || die "duplicate owns entry: $value"; done
+    owns+=("$value"); owns_count=$((owns_count + 1)); continue
+  fi
+  if [[ "$mode" == "quality" ]]; then
+    value="$line"; value="${value#"${value%%[![:space:]]*}"}"
+    [[ "$value" =~ ^([a-z][a-z0-9-]*):[[:space:]]+(.+[^[:space:]]|[^[:space:]])$ ]] \
+      || die "quality entry must be '<name>: <command>': '$value'"
+    name="${BASH_REMATCH[1]}"; cmd="${BASH_REMATCH[2]}"
+    [[ "$cmd" != *$'\t'* ]] || die "quality command '$name' must not contain a tab"
+    for prior in "${quality_names[@]:-}"; do [[ "$prior" != "$name" ]] || die "duplicate quality gate: $name"; done
+    quality_names+=("$name"); quality_cmds+=("$cmd"); quality_count=$((quality_count + 1)); continue
+  fi
+  if [[ "$line" =~ ^owns:[[:space:]]*$ ]]; then
+    (( owns_seen == 0 )) || die "duplicate owns: block"
+    owns_seen=1; mode="owns"; continue
+  fi
+  [[ ! "$line" =~ ^owns: ]] || die "owns: must start a block"
+  if [[ "$line" =~ ^quality:[[:space:]]*$ ]]; then
+    (( quality_seen == 0 )) || die "duplicate quality: block"
+    quality_seen=1; mode="quality"; continue
+  fi
+  [[ ! "$line" =~ ^quality: ]] || die "quality: must start a block"
+  if [[ "$line" =~ ^test:[[:space:]]+(.+)$ ]]; then
+    (( test_seen == 0 )) || die "duplicate test: declaration"
+    test_seen=1; test_cmd="${BASH_REMATCH[1]}"
+    test_cmd="${test_cmd%"${test_cmd##*[![:space:]]}"}"
+    [[ -n "$test_cmd" ]] || die "test: command is empty"
+    [[ "$test_cmd" != *$'\t'* ]] || die "test command must not contain a tab"
+    continue
+  fi
+  [[ ! "$line" =~ ^test: ]] || die "test: must contain one non-empty command after a space"
+done < "$file"
+
+(( owns_seen == 1 && owns_count > 0 )) || die "required owns: block is missing or empty"
+(( test_seen == 1 )) || die "required test: command is missing"
+(( quality_seen == 0 || quality_count > 0 )) || die "quality: block is empty"
+for value in "${owns[@]}"; do printf 'OWN\t%s\n' "$value"; done
+printf 'TEST\t%s\n' "$test_cmd"
+for ((i=0; i<${#quality_names[@]}; i++)); do
+  printf 'QUALITY\t%s\t%s\n' "${quality_names[$i]}" "${quality_cmds[$i]}"
+done
