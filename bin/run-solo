@@ -369,10 +369,27 @@ approved() {
   [[ -n "$expected" && "$given" == "$expected" ]]
 }
 
+# D23: guarantee the code phase can AUTHOR its commit. run-solo instructs the
+# agent to commit on the enforced branch, but a confined agent cannot configure a
+# git identity (and cannot commit without one). If the project resolves no
+# identity in any scope, seed a harness identity repo-locally — executable, never
+# a prompt instruction. If the project already has one (local or global), leave it
+# untouched. Backward compatible: toy projects that set their own identity are
+# unaffected.
+ensure_commit_identity() {
+  if git -C "$PROJECT" config user.name  >/dev/null 2>&1 \
+  && git -C "$PROJECT" config user.email >/dev/null 2>&1; then
+    return 0
+  fi
+  git -C "$PROJECT" config user.name  "craft-harness"
+  git -C "$PROJECT" config user.email "noreply@craft-harness.local"
+}
+
 # --- code + verify (after approval) -----------------------------------------
 run_code_and_verify() {
   local start
   seed_prompts   # idempotent — a resumed run picks up the current phase prompts
+  ensure_commit_identity   # D23: the code phase must be able to author its commit
 
   # code phase — in the project, on the enforced branch.
   start="$(date +%s)"

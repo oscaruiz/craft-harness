@@ -433,30 +433,49 @@
 (def fake-mvn-dir (str (fs/path repo-root "test" "fixtures" "fake-mvn")))
 
 (defn make-maven-project!
-  "A Maven-shaped project stub whose declared test command is NOT ./test.sh."
+  "A Maven-shaped project stub whose declared test command is NOT ./test.sh and
+   which has NO repo-local git identity (D23): the baseline is committed with an
+   ephemeral -c identity that is not stored, so run-solo must seed one before the
+   code phase can commit. The real myCQRS condition — no identity anywhere."
   []
   (let [dir (fs/path (tmp-dir) "mvnproj")]
     (fs/create-dirs (fs/path dir "src" "core"))
     (git! dir "init" "-q" "-b" "main")
-    (git! dir "config" "user.email" "toy@example.com")
-    (git! dir "config" "user.name" "Toy User")
     (write-file (fs/path dir "pom.xml")
                 "<project><modules><module>src/core</module></modules></project>\n")
     (write-file (fs/path dir "task.md")
                 "---\nhuman-approved: true\n---\n# Task: add the core impl so the module tests pass.\n")
     (write-file (fs/path dir "project.prompt")
-                (str "Project: a Maven-shaped stub for the D22 test.\n"
+                (str "Project: a Maven-shaped stub for the D22/D23 tests.\n"
                      "test: mvn -q -pl src/core test\n"
                      "owns:\n  src/core/**\n"))
-    (git! dir "add" "-A") (git! dir "commit" "-q" "-m" "maven baseline")
+    (git! dir "add" "-A")
+    ;; ephemeral identity for the baseline only — NOT written to repo config.
+    (git! dir "-c" "user.name=Setup" "-c" "user.email=setup@example.invalid"
+          "commit" "-q" "-m" "maven baseline")
     dir))
 
-(defn run-solo-maven!
-  "run-solo against the Maven-shaped fixture, with the fake mvn on PATH so the
-   declared test command resolves without a real Maven."
-  [project variant & extra]
-  (binding [*extra-env* {"PATH" (str fake-mvn-dir ":" (System/getenv "PATH"))}]
+(defn run-solo-maven*
+  "run-solo against the Maven-shaped fixture under a CLEAN, identity-free HOME
+   (no global git identity leaks in — so identity seeding is deterministic and
+   matches the real myCQRS condition). `on-path?` puts the fake mvn on PATH."
+  [project variant on-path? extra]
+  (binding [*extra-env* {"PATH" (if on-path?
+                                  (str fake-mvn-dir ":" (System/getenv "PATH"))
+                                  (System/getenv "PATH"))
+                         "HOME" (str (tmp-dir))
+                         "GIT_CONFIG_NOSYSTEM" "1"}]
     (apply run-solo! project variant extra)))
+
+(defn run-solo-maven!
+  "run-solo against the Maven fixture WITH the fake mvn on PATH (tool present)."
+  [project variant & extra]
+  (run-solo-maven* project variant true extra))
+
+(defn run-solo-maven-no-mvn!
+  "run-solo against the Maven fixture with NO mvn on PATH (tool absent)."
+  [project variant & extra]
+  (run-solo-maven* project variant false extra))
 
 (deftest code-and-verify-prompts-carry-the-projects-declared-test-command
   (testing "a project that declares `test:` gets THAT command in code/verify prompts, not ./test.sh"
@@ -501,6 +520,62 @@
       (let [prompt (slurp (str (fs/path (state p) "prompts" "verify.prompt")))]
         (is (str/includes? prompt "TEST_CMD: ./test.sh")
             "with no declaration the injected command defaults to ./test.sh")))))
+
+;; --- m4.8 / D23: inherit-env — commit identity + toolchain reachability ------
+;; run-solo must guarantee the code phase can author its commit even when the
+;; project has no git identity (seed one repo-locally), and the phase must be
+;; able to invoke the project's declared test command when its tool is on PATH —
+;; failing ATTRIBUTED, never silently, when it is not. Driven by the non-toy
+;; Maven fixture (which now has NO identity) — the toy never needed either.
+
+(defn local-ident [project field]
+  (:out (sh-run {:dir project} "git" "config" "--local" (str "user." field))))
+
+(deftest a-project-without-git-identity-gets-one-seeded-before-code
+  (testing "D23: run-solo seeds a repo-local commit identity so the code phase can commit"
+    (let [p (make-maven-project!)]
+      (testing "the fixture starts with NO repo-local identity"
+        (is (not (zero? (:exit (sh-run {:dir p} "git" "config" "--local" "user.email"))))))
+      (let [base (head p)
+            r1 (run-solo-maven! p "maven")
+            _ (approve! p (approval-token r1))
+            r2 (run-solo-maven! p "maven")]
+        (is (zero? (:exit r2)) (str "the run must complete once identity is seeded:\n" (:all r2)))
+        (is (not= base (head p)) "a candidate commit was produced")
+        (testing "the seeded harness identity authored the candidate commit"
+          (is (= "craft-harness" (str/trim (:out (git! p "log" "-1" "--format=%an")))))
+          (is (= "noreply@craft-harness.local" (str/trim (:out (git! p "log" "-1" "--format=%ae"))))))
+        (testing "the identity was seeded repo-locally (not globally)"
+          (is (= "noreply@craft-harness.local" (str/trim (local-ident p "email")))))))))
+
+(deftest an-absent-test-tool-makes-verify-fail-attributed-not-silent
+  (testing "D23: when the declared test command's tool is not on PATH, verify fails ATTRIBUTED"
+    (let [p (make-maven-project!)
+          base (head p)
+          r1 (run-solo-maven-no-mvn! p "maven")]
+      (is (zero? (:exit r1)) (str "specify must still reach the gate without the tool:\n" (:all r1)))
+      (approve! p (approval-token r1))
+      (let [r2 (run-solo-maven-no-mvn! p "maven")]
+        (is (not (zero? (:exit r2))) "a missing test tool must fail the run, not pass silently")
+        ;; EXACT attribution (D22 coda): must fail AT verify, not merely mention the
+        ;; word — and code must have produced a candidate first, so the failure is
+        ;; genuinely the absent tool at verify, not an earlier stumble (e.g. identity).
+        (is (not= base (head p)) "code produced a candidate (identity seeded); verify is what failed")
+        (is (re-find #"phase 'verify'" (:all r2)) "attributed to the verify phase specifically")
+        (is (not= "done" (status p)))))))
+
+(deftest a-present-test-tool-is-invoked-through-inherited-path
+  (testing "D23: when the tool IS on PATH, the phase resolves and runs it (inherited, not provisioned)"
+    (let [p (make-maven-project!)
+          base (head p)
+          r1 (run-solo-maven! p "maven")
+          _ (approve! p (approval-token r1))
+          r2 (run-solo-maven! p "maven")]
+      (is (zero? (:exit r2)) (str "with the tool on PATH the run completes:\n" (:all r2)))
+      (is (= "done" (status p)))
+      (testing "verify actually ran the declared command (its handoff names it)"
+        (let [h (slurp (str (fs/path (state p) "handoffs" "verify.handoff")))]
+          (is (str/includes? h "mvn -q -pl src/core test")))))))
 
 ;; --- interface hygiene -------------------------------------------------------
 

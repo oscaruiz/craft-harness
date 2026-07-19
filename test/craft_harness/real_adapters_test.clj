@@ -76,9 +76,9 @@ echo \"stub ran\"
     (let [args (argv stub)]
       (testing "headless one-shot"
         (is (some #{"-p"} args)))
-      (testing "containment layer (D2): permission mode is pinned"
-        (is (some #{"--permission-mode"} args))
-        (is (some #{"acceptEdits"} args)))
+      (testing "inherit-env (D23): the interactive permission gate is skipped so the phase can run its own toolchain (mvn/java/git); containment is the R9 hook + owns: allowlist (D2/D19), not the CLI prompt"
+        (is (some #{"--dangerously-skip-permissions"} args))
+        (is (not (some #{"--permission-mode"} args))))
       (testing "the prompt text is passed through"
         (is (some #(str/includes? % "PHASE: edit") args))))))
 

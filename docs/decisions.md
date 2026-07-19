@@ -671,6 +671,62 @@ the failed session under `myCQRS/.craft-harness/solo/current` is left in place.
 Nothing was committed on myCQRS's behalf (that would fabricate the candidate the
 run says does not exist and bypass the identity control).
 
+**CLOSED-IN-CODE (m4.8, inherit-env decision).** The owner chose to inherit the
+dev environment rather than build an isolated provisioned sandbox (rationale in
+D24). The harness fix is done: (1) `ensure_commit_identity` seeds a repo-local
+`craft-harness <noreply@craft-harness.local>` before the code phase when the
+project resolves none; (2) run-solo's PATH passthrough is pinned by tests (tool
+present → invoked; tool absent → **verify** fails attributed); (3) the claude-code
+adapter uses `--dangerously-skip-permissions` so a phase can run its own toolchain
+(containment stays the hook + `owns:` + scope-check, D2/D19). All proven green
+against a non-toy, identity-free Maven fixture. The **completing real run** is
+*environment-bound, not harness-bound*: this WSL context has no Linux JDK/Maven
+(only a Windows JDK at `/mnt/c/Program Files/Java/jdk-21`), and "inherit what's
+present" finds nothing present in WSL — so the run must be launched from a
+real-toolchain context (native-Windows Claude Code, or a WSL with a JDK). That is
+the owner's optional closing step; the harness side is complete.
+
+## D24 — Value-checkpoint verdict: a high-value learning experiment, archived; not a production tool today (2026-07-19)
+
+The myCQRS value checkpoint set out to answer one question: is the craft-harness
+solo pipeline worth using on the owner's real project? After five hardening
+rounds it produced enough evidence to answer honestly, in both directions.
+
+**What worked.** The process is sound and produced real, clean output. Given an
+approved `task.md`, `specify` wrote a faithful, well-structured spec (traceable
+Gherkin, all three MDC ownership rules covered) that the owner judged correct at
+the R6 gate; `code` then produced a **clean additive `QueryInterceptor`
+implementation** — +120/−1 across three files, correctly scoped to `src/core`,
+mirroring the command side, the `putIfAbsent` duplicate path untouched, all three
+MDC rules implemented. The human gate (R6, un-forgeable token), the owned-path
+contract (D19), and the structured-handoff spine held. As a way to turn an
+approved task into a scoped, reviewed candidate, it works.
+
+**What it cost.** Reaching even a near-complete run took **five** hardening
+rounds, each a real defect invisible until the harness met a real project, none
+visible to a suite whose fixtures mirror the toy:
+- **D17/D19** — the candidate commit was unscoped (owned-path contract added).
+- **D20** — published pack branches didn't satisfy the manifest.
+- **D21** — handoff routing depended on an env var the confined agent couldn't expand.
+- **D22 (+coda)** — code/verify prompts were hard-coded to the toy `./test.sh`; and the fix's own test "passed for the wrong reason."
+- **D23** — no commit identity + no reachable toolchain on a real build.
+
+And the final blocker is **structural, not a bug**: the owner's toolchain lives
+on the **Windows** side while the harness runs in **WSL** (the same split as
+push-from-Windows). Making the pipeline actually complete a Maven build would
+need either a provisioned sandbox (a project in itself) or a cross-boundary
+toolchain bridge — more provisioning than the harness's still-unproven value
+warrants for this setup.
+
+**Verdict (the owner's, recorded here).** Archived as a **high-value learning
+experiment, not a production tool today**. The harness taught a repeatable
+lesson — *"fixtures-mirror-the-toy blindness": every control that touches a
+project property (scope, identity, toolchain, routing) is invisible until tested
+against a deliberately non-toy fixture* — and it produced one genuinely useful
+artifact (the staged QueryInterceptor). It is **a candidate for revisit** if the
+environment changes (a Linux dev box / native toolchain) or a need arises that
+justifies the isolated-sandbox investment. Until then: no further milestones.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
