@@ -79,6 +79,16 @@
   (let [f (fs/path (state project) "manifest.json")]
     (when (fs/exists? f) (json/parse-string (slurp (str f)) true))))
 
+(defn prompt-line
+  "The single seeded-prompt line beginning with `prefix` (its whole content), or
+   nil. Used for EXACT-line injection assertions (D22 coda): a substring check is
+   exactly what let a bled TEST_CMD/HANDOFF_PATH line 'pass for the wrong reason'
+   — the injected machine line must be precisely the value, nothing trailing."
+  [prompt prefix]
+  (->> (str/split-lines prompt)
+       (filter #(str/starts-with? % prefix))
+       first))
+
 ;; --- the human gate: specify runs, then the run pauses -----------------------
 
 (deftest specify-runs-then-pauses-for-approval
@@ -373,14 +383,15 @@
 ;; fake agents that read the path ONLY from the prompt — zero paid runs.
 
 (deftest handoff-path-is-injected-literally-into-each-phase-prompt
-  (testing "each seeded phase prompt names the absolute handoff path the runner will read"
+  (testing "each seeded phase prompt names the absolute handoff path on an EXACTLY-terminated line"
     (let [p (make-project!)]
       (run-solo! p "happy")            ; seeds all phase prompts, pauses at the gate
       (doseq [phase ["specify" "code" "verify"]]
         (let [prompt (slurp (str (fs/path (state p) "prompts" (str phase ".prompt"))))
               expected (str (fs/path (state p) "handoffs" (str phase ".handoff")))]
-          (is (str/includes? prompt (str "HANDOFF_PATH: " expected))
-              (str phase ".prompt must carry the literal handoff path on a HANDOFF_PATH line")))))))
+          ;; EXACT line, not substring (D22 coda): nothing may bleed onto it.
+          (is (= (str "HANDOFF_PATH: " expected) (prompt-line prompt "HANDOFF_PATH:"))
+              (str phase ".prompt HANDOFF_PATH line must be exactly the path, nothing trailing")))))))
 
 (deftest confined-agent-routes-handoff-from-the-prompt-not-the-env
   (testing "an agent that finds the handoff path ONLY in the prompt (never $SOLO_HANDOFF) completes the pipeline"
@@ -453,8 +464,10 @@
       (run-solo-maven! p "maven")            ; seeds all prompts, pauses at the gate
       (doseq [phase ["code" "verify"]]
         (let [prompt (slurp (str (fs/path (state p) "prompts" (str phase ".prompt"))))]
-          (is (str/includes? prompt "TEST_CMD: mvn -q -pl src/core test")
-              (str phase ".prompt must carry the project's declared test command"))
+          ;; EXACT line, not substring (D22 coda): a bled TEST_CMD — the next
+          ;; instruction running onto this line — must FAIL this assertion.
+          (is (= "TEST_CMD: mvn -q -pl src/core test" (prompt-line prompt "TEST_CMD:"))
+              (str phase ".prompt TEST_CMD line must be exactly the declared command, nothing trailing"))
           (is (not (re-find #"(?i)\./test\.sh|\bsut\.sh\b" prompt))
               (str phase ".prompt must NOT hard-code the toy ./test.sh / sut.sh")))))))
 

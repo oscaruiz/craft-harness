@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Fake `mvn` for the non-toy (Maven-shaped) run-solo fixture (D22). It stands in
-# for `mvn ... test`: the module is "green" iff the code phase produced its
-# committed artifact under src/core. Deliberately NOT named test.sh — the whole
-# point is a project whose test command is not the toy ./test.sh.
+# Fake `mvn` for the non-toy (Maven-shaped) run-solo fixture (D22 + coda). It
+# stands in for `mvn ... test`. Two assertions, both load-bearing:
+#   1. It was invoked with EXACTLY the declared arguments. A malformed (bled)
+#      TEST_CMD injection appends stray text to the command, so the fake mvn then
+#      sees extra args and FAILS — instead of silently passing (the D22-coda
+#      "passed for the wrong reason" failure mode). Do NOT relax this to ignore
+#      args: ignoring args is exactly what made the original test blind.
+#   2. The module is "green" iff the code phase produced its committed artifact.
+# Deliberately NOT named test.sh — the point is a test command that is not ./test.sh.
+[[ "$*" == "-q -pl src/core test" ]] || { echo "fake mvn: unexpected args (malformed TEST_CMD injection?): $*" >&2; exit 2; }
 [[ -f src/core/impl.txt ]]

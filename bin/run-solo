@@ -225,9 +225,14 @@ project_test_cmd() {
 # same pattern as HANDOFF_PATH (D21): the runner hands the agent the resolved
 # value, never relying on the agent to parse project.prompt itself.
 test_cmd_instructions() { # <command>
+  # The TEST_CMD line must NOT be the block's last line: seed_prompts joins these
+  # blocks via command substitution, which strips a trailing newline — so a last
+  # TEST_CMD line would have the next instruction bleed onto it (D22 coda). A line
+  # after it keeps TEST_CMD cleanly newline-terminated. The exact-line test guards this.
   cat <<EOF
 The project's declared test command is given literally on the next line — run it exactly as written to check your work (it is the project's own test entrypoint; do NOT assume any hard-coded test script):
 TEST_CMD: $1
+Run that command exactly as written above; the paragraphs that follow are separate instructions.
 EOF
 }
 

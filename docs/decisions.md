@@ -587,6 +587,42 @@ that is deliberately *unlike* the toy, not a copy of it.
    `./test.sh`/`sut.sh`), and that the whole pipeline runs green via that command.
    Red before the fix, green after.
 
+### D22 coda — "passed for the wrong reason" is a named failure mode; injection-contract tests assert exact structure, not substring presence
+
+Immediately after m4.7 merged, the real checkpoint's seeded `code`/`verify`
+prompts showed the `TEST_CMD:` value with the *next* instruction bled onto the
+same line: `TEST_CMD: mvn -q test -pl src/core Write your handoff to this exact
+absolute file path…`. Cause: `seed_prompts` joins the injected blocks via command
+substitution, which strips a trailing newline, so a `TEST_CMD` line that was the
+*last* line of its block ran into the following block. (D21's `HANDOFF_PATH`
+escaped this only because more lines follow it inside its own block.)
+
+The defect itself was one line. **The real finding is that the m4.7 tests did not
+catch it — the same blindness as D20/D21/D22, now reproduced *inside the fix*:**
+
+- the prompt-content test used `str/includes? "TEST_CMD: mvn …"` — a **substring**
+  match, which a bled line satisfies;
+- the drive fixture's fake `mvn` **ignored its args**, so a bled command
+  (`mvn … test Write your handoff …`) still "passed".
+
+Both green for the wrong reason. Fixing the newline without fixing the tests would
+have moved the blindness one line over.
+
+**Named failure mode — "passed for the wrong reason."** An injection-contract test
+(HANDOFF_PATH, TEST_CMD, and any future literal the runner hands the agent) MUST
+assert the **exact** structure of the injected line — the line equals precisely
+the value, nothing trailing — never mere substring presence. And a fixture that
+stands in for a tool the pipeline invokes (fake `mvn`, wrappers, …) MUST assert it
+was called correctly, never rubber-stamp any invocation. A stub that ignores its
+inputs cannot fail, and a test that cannot fail is not a test.
+
+**Fix.** (1) `test_cmd_instructions` emits a line after `TEST_CMD:` so it is
+cleanly newline-terminated. (2) The injection tests now assert the exact
+`TEST_CMD:` *and* `HANDOFF_PATH:` lines (a new `prompt-line` helper), not
+substrings. (3) The fake `mvn` asserts it received exactly `-q -pl src/core test`
+and fails on any trailing args. All three are red against the bled injection,
+green after — the strengthened tests would have caught the original defect.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
