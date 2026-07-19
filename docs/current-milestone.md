@@ -1,56 +1,52 @@
-# Milestone 4.7 — Project-generic code/verify prompts + kill the fixtures-mirror-the-toy blindness (D22)
+# Milestone 4.8 — Inherit-env: let a real Maven run complete (closes D23 in code)
 
-Goal: the `code` and `verify` phases must target **the project's own declared
-test command**, not the harness's toy `./test.sh`. Surfaced by the myCQRS value
-checkpoint: with R6 correctly gating the approved QueryInterceptor task (D21
-fixed), the seeded `code`/`verify` prompts still said *"change the code so
-./test.sh passes"* and *"Run ./test.sh"* — toy assumptions baked into the
-`solo-pack` role prompts. myCQRS has no `./test.sh` (it is Maven/JUnit), so the
-implement + verify phases would have chased a nonexistent harness. Reference:
-D22, and the recurring root it names (see below).
-
-## The root this milestone attacks
-
-D22 is the **third** defect (D20, D21, D22) with the same cause: the automated
-fixtures ARE the toy project, so the suite is structurally blind to real-project
-divergence — **"fixtures-mirror-the-toy blindness."** This milestone does not
-just fix the prompts; it adds a deliberately **non-toy** fixture so the suite can
-finally see this class. Every test added here asks: *would this pass against a
-non-toy fixture?*
+Goal: the smallest change that lets `code`+`verify` complete against a real
+project, by **inheriting the developer's environment** — not by building an
+isolated provisioned sandbox. Owner decision (recorded in D23/D24): the sandbox
+is better architecture but a project in itself; prove the value first. This
+milestone lands the harness fix as far as fakes can verify it; the one thing it
+cannot do is the completing real run — that is environment-bound (a WSL/Windows
+toolchain split, see D24), not harness-bound.
 
 ## Behaviors (TDD, in order)
 
-1. **Non-toy fixture + failing tests (red).** A Maven-shaped project stub
-   (`pom.xml`, `src/core/**`, `project.prompt` declaring `test: mvn -q -pl
-   src/core test`, approved `task.md`) plus a generic fake agent that discovers
-   the test command ONLY from the injected prompt line and runs it, backed by a
-   fake `mvn`. Tests: the seeded `code`/`verify` prompts carry the declared
-   command and contain **no** `./test.sh`/`sut.sh`; the pipeline drives green via
-   that command. Both red before the fix.
-2. **Runner injects the declared test command.** `run-solo` reads a strict
-   `test:` line from `project.prompt` (single command; absent ⇒ default
-   `./test.sh`, backward compatible) and injects it literally as `TEST_CMD:` into
-   the `code` and `verify` prompts — the D21 pattern (never rely on agent-side
-   parsing of `project.prompt`).
-3. **Project-generic role prompts (`solo-pack` branch).** Rewrite
-   `swarmforge/roles/{code,verify}.prompt` to reference the declared test command
-   (`TEST_CMD` below) instead of `./test.sh`/`sut.sh`.
-4. **Wire the real consumer.** Add the structured `test:` line to myCQRS's
-   `project.prompt` (it currently carries the command only as prose) so the
-   parked checkpoint uses `mvn` on its next run. myCQRS-side change; owner pushes.
+1. **Non-toy fixture without identity + failing tests (red).** The Maven-shaped
+   fixture (`make-maven-project!`) now carries **no repo-local git identity** (the
+   baseline is committed with an ephemeral `-c` identity that isn't stored) and
+   runs under a clean, identity-free `HOME` — the real myCQRS condition. New
+   tests: a no-identity project's candidate commit succeeds and is authored by
+   the seeded identity; an absent test tool makes **verify** fail *attributed*
+   (exact `phase 'verify'`, after code produced a candidate — not a bare word
+   match, per the D22 coda); a present tool is invoked through the inherited PATH.
+2. **Commit-identity seeding** (`bin/run-solo`). `ensure_commit_identity` runs
+   before the code phase: if the project resolves no `user.name`/`user.email` in
+   any scope, seed `craft-harness <noreply@craft-harness.local>` repo-locally.
+   Executable, never a prompt. Existing identity (local or global) is left alone.
+3. **Toolchain reachability.** run-solo already passes the inherited PATH through
+   to each phase (`PATH="$FORK_ROOT/tools/toy:$PATH"`); m4.8 *pins* the behavior
+   (tool present → invoked; tool absent → verify fails attributed). No provision,
+   no install — inherit what's present.
+4. **Adapter permission relax** (`adapters/claude-code/invoke`). Swap
+   `--permission-mode acceptEdits` (which prompts for every Bash command and, in a
+   headless turn, denied `mvn`/`git commit`/wrappers — the D23 block) for
+   `--dangerously-skip-permissions`. Containment stays the R9 pre-commit hook +
+   the `owns:` allowlist + run-solo's owned-scope check (D2/D19), not the CLI
+   prompt. Not exercisable by the fake suite; validated by the optional real run.
 
 ## Exit criteria
 
-- `bb test` green (full suite, no regressions).
-- The non-toy Maven-shaped fixture drives green through the real pack's
-  `code`/`verify` prompts using its declared command; the prompt-content test
-  proves no `./test.sh`/`sut.sh` remains. Both were red before the fix.
-- `docs/decisions.md` records **D22**, naming the fixtures-mirror-the-toy pattern.
-- Harness merged to `main`. Owner pushes (harness `main`, the `solo-pack` branch
-  commit, and the myCQRS `project.prompt` change) from Windows.
-- The real myCQRS checkpoint is NOT re-run until this lands.
+- `bb test` green including the non-toy identity+build fixture (both tool-present
+  and tool-absent paths). ✅ 150 tests.
+- Harness fix complete and merged to `main`; owner pushes.
+- **D23 CLOSED-IN-CODE** — the harness change is done; the completing run is
+  environment-bound, not harness-bound.
+- **D24** recorded — the value-checkpoint verdict, honest in both directions.
+- The completing real myCQRS run is **not** attempted from CI/WSL (no reachable
+  toolchain); an optional command is handed to the owner to try from a real
+  toolchain context.
 
-## Out of scope
-Re-running the value checkpoint (owner's call, after this lands) · changing what
-`specify` does (already project-generic) · the adapter permission model ·
-CommandBus/QueryBus code in myCQRS itself (the parked task, untouched).
+## Out of scope (and staying that way)
+Any isolated/provisioned sandbox (possible v0.2, not now) · installing or
+provisioning a toolchain · m5/m6/anything beyond m4.8 · the staged
+QueryInterceptor work and the failed session in myCQRS (left as reference,
+untouched).

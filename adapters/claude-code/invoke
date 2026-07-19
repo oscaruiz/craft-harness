@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # craft-harness adapter: Claude Code, headless mode (adapters/CONTRACT.md).
-# One agent turn: `claude -p` on the prompt, cwd = workdir, confinement via
-# the CLI's permission configuration (decisions.md D2).
+# One agent turn: `claude -p` on the prompt, cwd = workdir.
+#
+# Permissions (D23, inherit-env decision): a real project phase must run its own
+# toolchain (mvn/java, git commit) and inherit the developer's environment.
+# `--permission-mode acceptEdits` prompts for every Bash command, and a headless
+# turn cannot answer the prompt — so it DENIED mvn, git config, git commit, and
+# the CRAP/DRY wrappers, which is what blocked the first real Maven run (D23). We
+# skip the interactive permission gate here: the real containment is the R9
+# pre-commit hook + the owns: allowlist + run-solo's owned-scope check (D2/D19),
+# not the CLI's per-command prompt. (An isolated provisioned sandbox is the
+# stronger posture — deferred as a possible v0.2, per the D24 verdict.)
 set -euo pipefail
 
 usage() { echo "usage: invoke --workdir <dir> --prompt-file <file>" >&2; exit 2; }
@@ -18,4 +27,4 @@ done
 [[ -d "$WORKDIR" && -f "$PROMPT" ]] || usage
 
 cd "$WORKDIR"
-exec claude -p --permission-mode acceptEdits "$(cat "$PROMPT")"
+exec claude -p --dangerously-skip-permissions "$(cat "$PROMPT")"
