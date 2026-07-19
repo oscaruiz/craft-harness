@@ -623,6 +623,54 @@ substrings. (3) The fake `mvn` asserts it received exactly `-q -pl src/core test
 and fails on any trailing args. All three are red against the bled injection,
 green after — the strengthened tests would have caught the original defect.
 
+## D23 — the solo pipeline cannot complete on a real Maven project: commit-identity lockout + toolchain absence (2026-07-19, value checkpoint)
+
+The first time `code`+`verify` ran against **non-toy** work — the approved
+myCQRS QueryInterceptor task, after D21/D22/coda cleared the earlier blockers —
+the `code` phase implemented all three deliverables cleanly (a correct, additive
++120/−1 across `QueryInterceptor.java`, `SimpleQueryBus.java`,
+`CorrelationIdQueryInterceptor.java`; the duplicate-registration `putIfAbsent`
+path left untouched) **but the run failed**: `phase 'code' failed: no candidate
+commit produced (HEAD unchanged)`. Two harness↔project environment gaps, neither
+about the spec or the code:
+
+**(a) Commit identity.** run-solo instructs the agent to *commit the result on
+the enforced branch*, but myCQRS has no repo-local `user.name`/`user.email`, so
+`git commit` fails "empty ident name" — and the adapter's `acceptEdits`
+permission profile denied **every** way to set one (`git config` → approval
+required; `-c user.name=… commit` and `GIT_*=… commit` → off the allowlist;
+editing `.git/config` → blocked as sensitive). A complete, staged change
+therefore cannot become a candidate commit. **D10** ("git author identity is
+`oscaruiz`, kept repo-locally") was never applied to myCQRS. This is the same
+shape as **D21/D22**: run-solo asks the agent to do something the adapter's own
+confinement makes impossible.
+
+**(b) Toolchain absence.** The phase environment exposes no JDK/Maven — `mvn`
+not on PATH, `JAVA_HOME` unset, `./mvnw` → "JAVA_HOME not defined" — so neither
+`TEST_CMD` (`mvn -q test -pl src/core`) nor the CRAP/DRY wrappers can run. Even
+had the commit succeeded, `verify` would hit the same wall running the tests.
+
+**The recurring root, once more.** This is the **fifth** defect surfaced by the
+value checkpoint (D20 → D21 → D22 → D22 coda → D23), and every one has been
+invisible until the harness met a **real** project. The toy solo fixtures never
+needed a git identity (they `git config` one in `make-project!`), never needed a
+language toolchain (their "build" is `./test.sh` = one `echo`), and never
+performed a real compile. "Fixtures-mirror-the-toy blindness" (D22) again — this
+time in the *environment* the phases run in, not the prompts or the tests.
+
+**No fix scoped yet — a design decision precedes it (owner's).** The fix splits
+in two very different directions depending on one choice the owner will make:
+whether the `code`/`verify` phases **inherit the developer's environment** (its
+JDK/Maven/git identity) or run in an **isolated sandbox** that must be explicitly
+provisioned with a per-language toolchain (and given a commit identity). That
+decision is deferred to the owner; this entry records the defect only.
+
+**State preserved (owner's instruction).** The staged implementation is kept in
+myCQRS's index/working tree as a reference (a clean additive implementation), and
+the failed session under `myCQRS/.craft-harness/solo/current` is left in place.
+Nothing was committed on myCQRS's behalf (that would fabricate the candidate the
+run says does not exist and bypass the identity control).
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
