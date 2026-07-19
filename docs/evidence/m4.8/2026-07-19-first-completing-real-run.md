@@ -117,8 +117,9 @@ times and nothing blocked on it — the code phase recorded the toy threshold
 (0) as structurally unattainable for Java and proceeded; verify carried it as
 an open item; `inspect-run` has no DRY check at all. DRY is currently
 *advisory* in solo-pack, in tension with the design's "quality gates" framing.
-Design-vs-reality clash per CLAUDE.md; needs a decisions.md verdict (enforce a
-realistic per-language threshold, or record it as advisory by design).
+Design-vs-reality clash per CLAUDE.md; resolved as advisory-by-design in
+decisions.md **D26** (revisit when a language-appropriate DRY tool is wired;
+CRAP and the mutation negative-assert remain enforced).
 
 Other carried-forward open item: wiring the query interceptor into
 Spring/Micronaut/demo modules is a follow-up task (explicitly out of scope).

@@ -756,13 +756,40 @@ the new files) and **nothing blocked on it** — the code phase judged the toy
 threshold structurally unattainable for Java and proceeded, verify carried it
 as an open item, and `inspect-run` has no DRY check at all. DRY is today
 *advisory* in solo-pack, in tension with the design's "quality gates are
-executable constraints" rule. Options: enforce a realistic per-language
-threshold, or record advisory-by-design. Not decided here.
+executable constraints" rule. Decided in D26.
 
-**Verdict.** Pending — the owner reviews the evidence file and writes it.
-D24's "archived, candidate for revisit if the environment changes" premise is
-factually superseded (the environment did change, and the pipeline completes);
-whether that changes the archive decision is the owner's call.
+**Verdict (the owner's, recorded here).** The solo pipeline both **completes
+and produces senior-quality work** on a real Maven project. Evidence: an
+approved-via-human-gate QueryInterceptor implementation, +301/−1, correct
+scope, all three MDC ownership rules, 12 tests covering every invariant
+including the subtle throw-during-pre-existing-id case and the
+duplicate-registration hole flagged at the R6 gate; 43/0/0 verified and
+independently reproduced; inspector PASS on real negative checks. This answers
+the founding value question **affirmatively** — with three honest bounds:
+
+1. Reaching it required a Linux toolchain in WSL (sdkman + python-shimmed
+   unzip/zip), so the harness is usable on this Windows+WSL setup only after
+   that non-trivial provisioning.
+2. It took five prior hardening rounds (D17/D20/D21/D22-coda/D23), each defect
+   invisible until real work — the harness earned its soundness against
+   reality, it wasn't born with it.
+3. DRY is de facto advisory (toy threshold 0, no inspector check) — recorded
+   as D26.
+
+Conclusion: the process works and improves on unguided agent work by giving
+spec-gate + isolated verification + negative-asserted evidence. Whether the
+setup cost is worth it for daily use is a separate, per-project call. **Not
+archived — proven, with known operating requirements.** (Supersedes D24's
+archive premise.)
+
+## D26 — DRY enforcement in solo-pack is advisory by design, for now (2026-07-19)
+
+Owner decision on the clash surfaced in D25: DRY stays **advisory** in
+solo-pack. A Java-reliable automated DRY gate needs a real per-language
+threshold; the toy threshold 0 is meaningless for Java (mirror-the-command-side
+code scores 44 by construction), and `inspect-run` carries no DRY check.
+Revisit if/when a language-appropriate DRY tool is wired into the wrappers.
+CRAP (executed threshold 6) and the mutation negative-assert remain enforced.
 
 ## Known-flaky tests
 
