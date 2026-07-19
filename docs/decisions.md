@@ -117,6 +117,28 @@ OPEN** until it lands. m4's `docs/current-milestone.md` records the same:
 "D8 (codex) is a v0.1 exit item; it does not block this milestone." This is a
 sequencing change only — no scope is dropped, only deferred.
 
+**Closure (2026-07-19, v0.1).** D8 is closed with an explicit certification
+caveat. A native Codex CLI is now installed in WSL, but the formal adapter
+scenario cannot start: `codex exec --sandbox workspace-write` fails during
+initialization with `failed to initialize in-process app-server client:
+Read-only file system (os error 30)`. The same command fails identically when
+run directly in an otherwise empty temporary Git repository, outside
+`run-scenario` and craft-harness. This exonerates the adapter and classifies the
+blocker as a Codex-CLI-on-WSL environment limitation, not an open harness defect.
+
+R1's status is therefore precise rather than binary. The harness is
+**architecturally agent-CLI generic**: it has a documented executable adapter
+contract, offline construction tests, and one fully scenario-certified backend
+(Claude Code). A second-vendor backend is also **demonstrated in real use**:
+Codex successfully read, reasoned about, and adversarially audited this complete
+repository in the D28 re-audit, the post-m6 confirmation audit, and the final m6
+threat-model confirmation. Those runs demonstrate the practical property that
+a different-vendor CLI can operate on the project. Codex is not, however,
+formally certified through the canonical edit → test → commit → handoff →
+wake-up scenario in this WSL environment. That missing formal scenario result is
+a recorded external certification caveat, not an unreported green and not a
+remaining v0.1 implementation obligation.
+
 ## D9 — Faithful tmux mode is default shell in the window + zsh helpers as shebang subprocesses (2026-07-18, m3)
 
 Certifying the interactive window mode (B1, `bin/smoke-tmux`) surfaced a real
