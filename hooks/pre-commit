@@ -13,10 +13,10 @@ BLACKLIST='^(task\.md$|swarmforge/constitution/|adapters/)'
 # against drift by the test owns-parser-matches-between-parse-owns-and-hook. The
 # hook is a self-contained copy under .git/hooks/, so it cannot source the fork's
 # bin/; it embeds the parser instead. Emits globs on stdout; returns 1 (message
-# on stderr) on a malformed block; a missing file is "no allowlist" (empty, 0).
+# on stderr) on a malformed or missing required contract.
 parse_owns() {
   local f="$1" line glob in_block=0 seen_block=0 count=0
-  [[ -f "$f" ]] || return 0
+  [[ -f "$f" ]] || { echo "parse-owns: required project.prompt not found: $f" >&2; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$in_block" -eq 1 ]]; then
       if [[ -z "${line//[[:space:]]/}" ]]; then in_block=0; continue; fi   # blank ends block
@@ -45,8 +45,8 @@ parse_owns() {
       echo "parse-owns: owns: must start a block (one glob per indented line, no inline value): '$line'" >&2; return 1
     fi
   done < "$f"
-  if [[ "$seen_block" -eq 1 && "$count" -eq 0 ]]; then
-    echo "parse-owns: owns: block is empty (declare at least one path glob, or remove the block)" >&2
+  if [[ "$seen_block" -eq 0 || "$count" -eq 0 ]]; then
+    echo "parse-owns: required owns: block is missing or empty" >&2
     return 1
   fi
   return 0
@@ -100,6 +100,11 @@ if [[ -f project.prompt ]]; then
       exit 1
     fi
   fi
+fi
+
+if [[ ! -f project.prompt ]]; then
+  echo "pre-commit: refusing commit — required project.prompt/owns: contract is missing" >&2
+  exit 1
 fi
 
 exit 0
