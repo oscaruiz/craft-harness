@@ -486,6 +486,50 @@ the `m*-` branches are development history only.
    every `MANAGED_FILES.manifest` entry — the guard that would have caught this
    at m3. Adding a pack is one line in `PACKS`; the guard then covers it.
 
+## D21 — the handoff destination must be an injected literal path, not an env var the agent expands (2026-07-19, m4.6, value checkpoint)
+
+Surfaced by the myCQRS value checkpoint: the first real `claude-code` solo run
+failed at `specify` with `no handoff body written to .../handoffs/specify.handoff`.
+The agent had produced the spec correctly, but wrote its handoff to a **guessed**
+filename (`handoffs/specify.md`) and said so verbatim in its log: *"the shell
+blocked direct env-var expansion, so I inferred `$SOLO_HANDOFF` = …/specify.md."*
+Under the adapter's `--permission-mode acceptEdits` confinement the agent cannot
+run a shell to expand `$SOLO_HANDOFF`, and `HANDOFF_INSTRUCTIONS` named the
+**variable**, not a resolved path — so the destination was left to a guess.
+
+This is the same class as **D17**: a critical control (here, handoff routing —
+the spine of the phase→phase contract, R6) that lived in prompt text the LLM may
+be unable to honour. It also complements **D14** (the routing *header* is
+run-solo's job): D14 owns the header content, D21 owns getting the body to the
+right file in the first place.
+
+**Why nothing caught it.** The fake solo agents (`test/fixtures/solo-agent/*`)
+are plain bash and read `$SOLO_HANDOFF` directly — they are not confined — so the
+whole `run-solo` suite was green while the real adapter failed deterministically
+every run. The suite modelled a capability the audited agent does not have.
+
+**Fix (executable, not a prompt tweak).**
+1. `bin/run-solo` resolves `PROJECT` to an absolute path up front, then injects
+   the handoff destination into each phase prompt as a literal line
+   `HANDOFF_PATH: <abs>` (`handoff_instructions <phase>`, seeded per phase).
+   Routing no longer depends on any agent-side variable expansion. `$SOLO_HANDOFF`
+   is still exported as a convenience for agents that *can* read it, but it is no
+   longer load-bearing.
+2. New negative fixture `misroute` (writes the handoff to the wrong filename) —
+   the run must still fail, attributed, naming the phase. We deliberately do NOT
+   add a "normalize/adopt a stray handoff" fallback: adopting a mis-located file
+   would blur attribution (a genuinely broken phase would look like it passed).
+3. New fixture `confined` — discovers the handoff path **only** from the injected
+   `HANDOFF_PATH:` prompt line (never `$SOLO_HANDOFF`), modelling the real
+   headless agent. Test `confined-agent-routes-handoff-from-the-prompt-not-the-env`
+   drives it through specify→code→verify to green; `handoff-path-is-injected-
+   literally-into-each-phase-prompt` pins the injection. Both are red before the
+   fix, green after — zero paid runs.
+
+**Not re-run yet.** The real myCQRS checkpoint stays parked until this lands and
+the owner restarts it; the failed session state under
+`myCQRS/.craft-harness/solo/current` is regenerable and will be re-derived.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

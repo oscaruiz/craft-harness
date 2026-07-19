@@ -47,6 +47,11 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$PROJECT" && -n "$ADAPTER" ]] || usage
 [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+# Resolve PROJECT to an absolute path (D21): we inject the handoff destination
+# into the phase prompt as a literal path, and it must be byte-identical to the
+# path the runner later reads. A relative PROJECT (with the agent cd'd into its
+# workdir) would make the two diverge.
+PROJECT="$(cd "$PROJECT" && pwd)"
 command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
 
 # R6 precondition: an approved task.md must exist before any phase runs.
@@ -172,7 +177,19 @@ write_prompt() { # <phase> <body>
   printf 'PHASE: %s\n\n%s\n' "$1" "$2" > "$PROMPTS/$1.prompt"
 }
 
-HANDOFF_INSTRUCTIONS="Write your handoff to the file named by the environment variable \$SOLO_HANDOFF. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+# The handoff-section instructions run-solo appends to every phase prompt. The
+# destination is injected as a LITERAL absolute path on its own `HANDOFF_PATH:`
+# line (D21) — never as a variable name the agent must shell-expand — because a
+# confined headless agent (adapter's --permission-mode acceptEdits) cannot
+# expand $SOLO_HANDOFF, and a guessed filename fails the run. $SOLO_HANDOFF is
+# still exported (run_phase) as a convenience, but routing no longer depends on
+# any agent-side expansion. Per-phase because each phase has its own path.
+handoff_instructions() { # <phase>
+  local dest="$HANDOFFS/$1.handoff"
+  cat <<EOF
+Write your handoff to this exact absolute file path, given literally on the next line:
+HANDOFF_PATH: $dest
+Use that literal path. It is also exported as \$SOLO_HANDOFF, but do NOT rely on shell/variable expansion — write to the literal path above. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
 
 # done
 - <what this phase actually accomplished>
@@ -185,15 +202,17 @@ HANDOFF_INSTRUCTIONS="Write your handoff to the file named by the environment va
 # commands executed
 - <the commands you ran>
 
-Every section must be present. Use bullet lines under each heading."
+Every section must be present. Use bullet lines under each heading.
+EOF
+}
 
 # The phase bodies come from the pack branch (D16); run-solo appends the
 # handoff-section instructions (a control it owns) and the PHASE header.
 seed_prompts() {
   mkdir -p "$PROMPTS"
-  write_prompt specify "$(load_role_body specify) $HANDOFF_INSTRUCTIONS"
-  write_prompt code "$(load_role_body code) $HANDOFF_INSTRUCTIONS"
-  write_prompt verify "$(load_role_body verify) $HANDOFF_INSTRUCTIONS"
+  write_prompt specify "$(load_role_body specify) $(handoff_instructions specify)"
+  write_prompt code "$(load_role_body code) $(handoff_instructions code)"
+  write_prompt verify "$(load_role_body verify) $(handoff_instructions verify)"
 }
 
 RUN_START="$(date +%s)"
