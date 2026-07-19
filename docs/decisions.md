@@ -325,6 +325,14 @@ extracted bodies are byte-identical to the former baked strings, so the seeded
 prompts (and the whole existing suite) are unchanged; new tests assert the
 prompts now originate from the branch and that a missing pack/role fails cleanly.
 
+**Correction (2026-07-19, see D20).** The claim above that `two-pack-lite` is "a
+proper pack branch" was only half-true: it carried the pack-specific roles/conf
+but was itself **under-distilled** — missing the manifest entries
+`swarmforge/constitution/articles/handoffs.prompt` and `hooks/pre-commit`, so
+`craft-harness run --pack two-pack-lite` also dies at `install_tree`. `solo-pack`
+was created with the same gap. D20 records the fix and the guard that prevents it
+recurring.
+
 ## D17 — DEFECT (OPEN): run-solo's candidate commit is unscoped (R9/R4 gap) (2026-07-18, value checkpoint)
 
 Surfaced by the value checkpoint running solo-pack against a real repo (myCQRS)
@@ -439,6 +447,44 @@ strict:
 battery of fixtures to both and asserts identical (stdout, exit) — the same
 anti-drift pattern as the blacklist/inspect-run guard. Git never passes args to
 the hook, so the escape hatch is inert in normal operation.
+
+## D20 — every pack branch must satisfy the manifest; dev branches are not real packs (2026-07-19)
+
+Surfaced by the value checkpoint: `craft-harness run --pack solo-pack` dies at
+`install_tree` because `solo-pack` is missing two of the four
+`MANAGED_FILES.manifest` entries — `swarmforge/constitution/articles/handoffs.prompt`
+and `hooks/pre-commit`. `two-pack-lite` has the identical gap (correcting D16).
+Both were distilled from the `upstream/two-pack` base, which carries an upstream
+`project.prompt` article and neither of our two additions (the `handoffs.prompt`
+article and the R9 hook); the distillation commit swapped only roles/conf and
+never added the manifest files. The milestone **dev** branches `m3-two-pack-lite`
+and `m4-solo-pack` were built straight from the fork working tree, so they *do*
+carry all four — their completeness masked the defect in the distilled packs.
+
+**Why nothing caught it.** `launcher-test` exercises install against a synthetic
+`test-pack` branch it makes by copying the fork's *own* working tree
+(`make-fork!`), which always satisfies the manifest. The real published pack
+branches were never install-validated, so the suite could not see the gap.
+
+**Do NOT fall back to `m4-solo-pack` for real runs.** It is a milestone dev
+branch that predates the m4.5 owned-path contract: its `hooks/pre-commit` is the
+blacklist+branch-guard version, without the `owns:` allowlist (D19). A run
+installed from `m4-solo-pack` would ship the pre-owns hook and silently drop the
+hook half of the D17/D19 defence-in-depth (run-solo's scope check still fires;
+the hook allowlist does not). `solo-pack` and `two-pack-lite` are the real packs;
+the `m*-` branches are development history only.
+
+**Fix (executable, not prose).**
+1. Carry the two canonical files (byte-identical blobs from `main`) onto
+   `solo-pack` and `two-pack-lite`. Additive only — no upstream article is
+   modified, and the extraneous `project.prompt` is left in place (unlisted in
+   the manifest, it is simply never materialized).
+2. A machine-readable pack registry `PACKS` at the fork root names our
+   installable packs explicitly — not by branch-name convention, which would
+   sweep in `upstream/{two,four,six}-pack`. New test
+   `craft-harness.pack-manifest-test` asserts every branch in `PACKS` resolves
+   every `MANAGED_FILES.manifest` entry — the guard that would have caught this
+   at m3. Adding a pack is one line in `PACKS`; the guard then covers it.
 
 ## Known-flaky tests
 

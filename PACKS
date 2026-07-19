@@ -1,0 +1,11 @@
+# PACKS — the fork's own installable pack branches. Each name here is a valid
+# argument to `craft-harness run --pack <branch>` and MUST satisfy every entry
+# in MANAGED_FILES.manifest (guarded by craft-harness.pack-manifest-test).
+#
+# Milestone dev branches (m1-launcher, m2-adapters, m3-two-pack-lite,
+# m4-solo-pack, m4.5-owned-paths) are NOT real packs — they predate the m4.5
+# owned-path (owns:) contract and must never be used for real runs (D20).
+# Upstream packs (two-pack, four-pack, six-pack, adversaries) are theirs, not
+# ours, and are validated against their own layout, not this manifest.
+solo-pack
+two-pack-lite
