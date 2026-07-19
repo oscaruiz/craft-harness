@@ -366,6 +366,52 @@
       (is (not (fs/exists? (fs/path (state p) "spec" "spec.md")))
           "specify must not have run"))))
 
+;; --- m4.6 / D21: handoff routing must not depend on agent-side env expansion --
+;; The seeded prompt must carry the RESOLVED ABSOLUTE handoff path literally, so a
+;; confined headless agent (which under acceptEdits cannot shell-expand
+;; $SOLO_HANDOFF) can still route its handoff where run-solo reads it. Proven with
+;; fake agents that read the path ONLY from the prompt — zero paid runs.
+
+(deftest handoff-path-is-injected-literally-into-each-phase-prompt
+  (testing "each seeded phase prompt names the absolute handoff path the runner will read"
+    (let [p (make-project!)]
+      (run-solo! p "happy")            ; seeds all phase prompts, pauses at the gate
+      (doseq [phase ["specify" "code" "verify"]]
+        (let [prompt (slurp (str (fs/path (state p) "prompts" (str phase ".prompt"))))
+              expected (str (fs/path (state p) "handoffs" (str phase ".handoff")))]
+          (is (str/includes? prompt (str "HANDOFF_PATH: " expected))
+              (str phase ".prompt must carry the literal handoff path on a HANDOFF_PATH line")))))))
+
+(deftest confined-agent-routes-handoff-from-the-prompt-not-the-env
+  (testing "an agent that finds the handoff path ONLY in the prompt (never $SOLO_HANDOFF) completes the pipeline"
+    (let [p (make-project!)
+          r1 (run-solo! p "confined")]
+      (is (zero? (:exit r1)) (str "confined specify must reach the gate:\n" (:all r1)))
+      (is (= "awaiting_approval" (status p)))
+      (approve! p (approval-token r1))
+      (let [r2 (run-solo! p "confined")]
+        (is (zero? (:exit r2)) (str "the confined run must complete when the path is injected:\n" (:all r2)))
+        (is (= "done" (status p)))
+        (testing "every phase landed a schema-valid handoff at the runner-expected path"
+          (doseq [phase ["specify" "code" "verify"]]
+            (let [h (fs/path (state p) "handoffs" (str phase ".handoff"))]
+              (is (fs/exists? h) (str phase ".handoff must exist at the runner-expected path"))
+              (is (zero? (:exit (sh/sh "bb" (str (fs/path repo-root "bin" "handoff-validate.bb")) (str h))))
+                  (str phase " handoff must be schema-valid")))))))))
+
+(deftest a-misrouted-handoff-fails-the-run-attributed
+  (testing "a phase that writes its handoff to the wrong filename turns the run red, attributed"
+    (let [p (make-project!)
+          base (head p)
+          r1 (run-solo! p "misroute")]
+      (is (not (zero? (:exit r1))) "a mis-routed handoff must fail the run")
+      (is (re-find #"(?i)specify" (:all r1)) "attributed to the phase")
+      (is (re-find #"(?i)handoff" (:all r1)) "names the handoff as the problem")
+      (testing "the gate never opened and no valid handoff exists at the expected path"
+        (is (not (fs/exists? (fs/path (state p) "handoffs" "specify.handoff"))))
+        (is (not= "awaiting_approval" (status p)))
+        (is (= base (head p)) "no code ran")))))
+
 ;; --- interface hygiene -------------------------------------------------------
 
 (deftest run-solo-usage-is-clear

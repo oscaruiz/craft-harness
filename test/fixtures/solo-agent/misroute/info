@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+echo "fake-solo-agent misroute 0.1"
