@@ -180,6 +180,16 @@ Consequence for later milestones: faithful worktree-per-role and use of the
 upstream `handoffd.bb` are deferred until a pack actually needs parallel roles
 (six-pack) or the solo-pack defines its own session state (m4, per D6).
 
+**External-audit correction (2026-07-19, see D27).** The claimed sequential
+waking and consumption evidence are stronger than the implementation. `run-pack`
+starts and prompts both roles immediately; only the toy fake is programmed to
+make the cleaner idle on turn zero. After any handoff, one idle-grace interval
+with no new outbox file is treated as completion, even if the recipient is still
+working. On shutdown `drain_inbox` moves an unread handoff and adds
+`dequeued_at`, so the inspector cannot distinguish genuine agent consumption
+from runner-fabricated consumption. The two-pack-lite path has never been run
+against real work; its sequencing and consumption claims remain unvalidated.
+
 ## D12 — Interactive Mode 2 needs a tool-permission envelope; `acceptEdits` alone stalls unattended (2026-07-18, m3)
 
 The first B6 real run cleared the workspace-trust gate (owner pre-set
@@ -245,6 +255,14 @@ validated the whole chain on a real agent — trust, permission envelope, launch
 constitution/role/task reading, the wrappers, swarm_handoff.sh, ready_for_next
 batching, commits, breakers. The design lesson: a captured TUI transcript is not
 evidence of tool execution; the tool must leave its own durable artifact.
+
+**External-audit correction (2026-07-19, see D27).** Durable wrapper logging
+proves that a wrapper emitted a report; it does not prove that the gate passed or
+that it was invoked on the correct files or module. `inspect-run` reads only
+`crap: threshold=<n>` and does not require `crap: result=pass`, a score at or
+below the threshold, a successful wrapper exit, or correct invocation arguments.
+The conclusion that durable logging made the CRAP gate executable was therefore
+an overclaim.
 
 ## D14 — The structured handoff's routing header is run-solo's job, not the agent's (2026-07-18, m4)
 
@@ -448,6 +466,14 @@ battery of fixtures to both and asserts identical (stdout, exit) — the same
 anti-drift pattern as the blacklist/inspect-run guard. Git never passes args to
 the hook, so the escape hatch is inert in normal operation.
 
+**External-audit correction (2026-07-19, see D27).** The declared owned-path
+control is optional: a missing `project.prompt` or missing `owns:` block produces
+an empty allowlist and silently disables both candidate scoping and the hook
+allowlist. That is backward compatible with the toy, but it is not a dependable
+R4/R9 containment guarantee for a real project. The original wording overstated
+the control by describing the malformed case as fail-closed while accepting an
+absent contract as unrestricted.
+
 ## D20 — every pack branch must satisfy the manifest; dev branches are not real packs (2026-07-19)
 
 Surfaced by the value checkpoint: `craft-harness run --pack solo-pack` dies at
@@ -623,6 +649,15 @@ substrings. (3) The fake `mvn` asserts it received exactly `-q -pl src/core test
 and fails on any trailing args. All three are red against the bled injection,
 green after — the strengthened tests would have caught the original defect.
 
+**External-audit correction (2026-07-19, see D27).** The exact-structure rule
+was applied to prompt injection but not to other load-bearing evidence.
+`inspect-run` accepts a scenario as traced when its ID merely appears in the
+verify handoff/log or a broadly selected test/feature file; the verify prompt
+itself tells the agent to repeat those IDs. Likewise, CRAP inspection accepts
+threshold-string presence without validating a complete successful report or
+the invocation. The named "passed for the wrong reason" failure mode therefore
+remains live outside the injection tests.
+
 ## D23 — the solo pipeline cannot complete on a real Maven project: commit-identity lockout + toolchain absence (2026-07-19, value checkpoint)
 
 The first time `code`+`verify` ran against **non-toy** work — the approved
@@ -782,6 +817,13 @@ setup cost is worth it for daily use is a separate, per-project call. **Not
 archived — proven, with known operating requirements.** (Supersedes D24's
 archive premise.)
 
+**External-audit correction (2026-07-19, see D27).** One cooperative run
+produced good work; `run-solo` does NOT independently execute `TEST_CMD` or
+invoke the inspector, so the automatic gates are advisory, not enforced — the
+harness did not earn the soundness the original D25 claimed. The operator's
+independent test re-execution and separate inspector run are valid evidence for
+that one candidate, but they do not establish the runner's exit semantics.
+
 ## D26 — DRY enforcement in solo-pack is advisory by design, for now (2026-07-19)
 
 Owner decision on the clash surfaced in D25: DRY stays **advisory** in
@@ -790,6 +832,68 @@ threshold; the toy threshold 0 is meaningless for Java (mirror-the-command-side
 code scores 44 by construction), and `inspect-run` carries no DRY check.
 Revisit if/when a language-appropriate DRY tool is wired into the wrappers.
 CRAP (executed threshold 6) and the mutation negative-assert remain enforced.
+
+**External-audit correction (2026-07-19, see D27).** CRAP is also advisory.
+The current wrapper is explicitly a toy, language-free lexical proxy: it counts
+shell-oriented control-flow tokens in arbitrary files and does not run
+`crap4java` or measure Java complexity/coverage. Threshold 6 is therefore not a
+real-project CRAP threshold. In addition, the inspector checks threshold
+presence rather than a passing result. The mutation negative-assert is also not
+enforced: it greps captured TUI logs even though D13 established that this
+channel can collapse tool execution output. Absence from that transcript is not
+proof that mutation did not run.
+
+## D27 — External audit: fixtures-mirror-the-toy blindness remains live (2026-07-19)
+
+An independent adversarial audit of `main`, the `solo-pack` and
+`two-pack-lite` branches, their tests, and D1–D26 found that the recurring
+"fixtures-mirror-the-toy blindness" class is not closed. The audit did not
+re-report D17/D20/D21/D22/D23 as open; it found the same root pattern in the
+remaining verdict machinery:
+
+- **The solo verifier is advisory, not an executable gate.** `run-solo`
+  injects `TEST_CMD` into the code/verify prompts but never runs that command
+  itself. An adapter exit 0 plus a schema-valid handoff is sufficient for the
+  runner to print `SUCCESS`. `run-solo` also never invokes `inspect-run`; the
+  green inspector in the real-run evidence was a separate operator action.
+  Consequently test execution, CRAP, mutation absence, and scenario
+  traceability are not part of the runner's success result.
+- **CRAP mirrors DRY's toy-derived weakness.** `tools/toy/crap.sh` is a lexical
+  proxy that counts occurrences of `if`/`elif`/`for`/`while`/`case`, `&&`, and
+  `||`. It is not `crap4java` and its threshold 6 has no established meaning on
+  real Java or multi-language code. `inspect-run` checks only that a logged
+  threshold equals 6, not that the wrapper passed, exited zero, or received the
+  correct changed files. A failing CRAP report can therefore satisfy inspection.
+- **Consumption evidence can be fabricated by the production runner.** In
+  two-pack-lite, `drain_inbox` moves unread handoffs into `in_process` and adds
+  `dequeued_at`; the inspector then treats that runner-authored field as proof
+  of `ready_for_next` consumption. The fake agent never consumes the queue, so
+  this production fallback exists specifically to make the toy fixture green.
+- **Mutation evidence comes from a channel already known to be unreliable.**
+  The negative assertion greps captured TUI logs. D13 established that the TUI
+  can collapse tool output, which is why wrapper evidence needed a durable log.
+  No equivalent durable command-execution record exists for mutation; no log
+  match proves only absence from the capture, not absence of execution.
+- **Scenario traceability is substring presence, not executable linkage.** An
+  ID is accepted if it appears anywhere in the verify handoff/log or broadly
+  selected test/feature files. Because the verify prompt tells the agent to name
+  every ID, repetition alone satisfies the check; it does not prove that a test
+  corresponding to the scenario exists or ran.
+- **two-pack-lite remains wholly unvalidated on real work.** It has run only on
+  the toy project. Its fake responds synchronously, deliberately idles the
+  cleaner on turn zero, ignores real tool permissions and toolchains, and
+  completes inside the idle-grace timing model. The real runner starts both
+  roles, treats one quiet interval after any handoff as global completion, and
+  may kill a real cleaner still working. No real-project evidence validates
+  those assumptions.
+
+**Verdict.** The successful myCQRS artifact is evidence that one cooperative
+run produced good work, not that the harness automatically enforced its stated
+gates. Until separate remediation decisions are made, verifier test execution,
+CRAP/DRY, mutation absence, and scenario traceability must be described as
+advisory evidence. D27 records findings only: it does not authorize a runner,
+inspector, wrapper, pack, manifest, or test-suite change, and it does not retire
+either pack.
 
 ## Known-flaky tests
 
