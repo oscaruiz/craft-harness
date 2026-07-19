@@ -727,6 +727,43 @@ artifact (the staged QueryInterceptor). It is **a candidate for revisit** if the
 environment changes (a Linux dev box / native toolchain) or a need arises that
 justifies the isolated-sandbox investment. Until then: no further milestones.
 
+## D25 — The completing real run happened; D24's environment premise is closed (2026-07-19)
+
+The run D24 called environment-bound completed: `run-solo` went
+`specify → R6 approval → code → verify → done` against real myCQRS on the
+approved QueryInterceptor task, first attempt after the environment fix, with
+**no sixth environment issue**. Full primary evidence (inspector report, verify
+handoff, independent test re-execution, wrappers log, complete candidate diff)
+in one file: [`evidence/m4.8/2026-07-19-first-completing-real-run.md`](evidence/m4.8/2026-07-19-first-completing-real-run.md).
+
+**What changed since D23/D24.** The WSL/Windows toolchain split was closed the
+cheap way, not the sandbox way: a Linux JDK 21 + Maven 3.9.16 installed via
+sdkman (no sudo) inside WSL. That plus the two m4.8 fixes already merged —
+`ensure_commit_identity` and the permission-gate relax — were sufficient. Both
+m4.8 fixes are now confirmed **in vivo**: candidate commit `6c00164` authored by
+the seeded `craft-harness <noreply@craft-harness.local>`; verify ran the
+declared TEST_CMD (`mvn -q test -pl src/core`, from `project.prompt` via the
+D22 mechanism) exactly as written — exit 0, 43/0/0, ArchUnit green — and the
+operator's independent re-run at the candidate commit reproduced 43/0/0
+identically. The code phase wrote the 12 JUnit tests the D23 run never got to
+(all task invariants covered; the duplicate-registration invariant was already
+covered by a pre-existing test kept green, per the spec's baseline). Inspector:
+all five solo checks green, `RESULT: PASS`.
+
+**New clash surfaced by this run (open, needs its own verdict).** The DRY
+wrapper failed three times in `wrappers.log` (score 44 vs toy threshold 0 on
+the new files) and **nothing blocked on it** — the code phase judged the toy
+threshold structurally unattainable for Java and proceeded, verify carried it
+as an open item, and `inspect-run` has no DRY check at all. DRY is today
+*advisory* in solo-pack, in tension with the design's "quality gates are
+executable constraints" rule. Options: enforce a realistic per-language
+threshold, or record advisory-by-design. Not decided here.
+
+**Verdict.** Pending — the owner reviews the evidence file and writes it.
+D24's "archived, candidate for revisit if the environment changes" premise is
+factually superseded (the environment did change, and the pipeline completes);
+whether that changes the archive decision is the owner's call.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
