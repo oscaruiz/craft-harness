@@ -18,6 +18,7 @@
                 (require 'craft-harness.project-contract-test)
                 (require 'craft-harness.run-solo-test)
                 (require 'craft-harness.pack-manifest-test)
+                (require 'craft-harness.six-pack-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'craft-harness.launcher-test
@@ -32,5 +33,6 @@
                                                                     'craft-harness.parse-owns-test
                                                                     'craft-harness.project-contract-test
                                                                     'craft-harness.run-solo-test
-                                                                    'craft-harness.pack-manifest-test)]
+                                                                    'craft-harness.pack-manifest-test
+                                                                    'craft-harness.six-pack-test)]
                   (System/exit (+ fail error))))}}}

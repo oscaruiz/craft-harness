@@ -1,0 +1,18 @@
+Project: non-toy multi-module fixture for the m7 six-pack.
+
+Two modules with a real boundary: `core` exposes a public API (core/api.sh)
+over a private impl (core/lib.sh); `web` composes core but may reach it ONLY
+through the public API. Genuine unit tests, an architecture gate, a duplication
+gate, and an executable-Gherkin acceptance suite. Deliberately unlike the
+sut.sh/42 toy — the declared commands are the project's own entrypoints.
+
+owns:
+  core/**
+  web/**
+  features/**
+  acceptance/steps.sh
+test: bash run-unit.sh
+quality:
+  architecture: bash tools/arch-check.sh
+  dup: bash tools/dup-check.sh
+accept: bash acceptance/run-acceptance.sh
