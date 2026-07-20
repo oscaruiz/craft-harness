@@ -5,6 +5,8 @@
 # Milestone dev branches (m1-launcher, m2-adapters, m3-two-pack-lite,
 # m4-solo-pack, m4.5-owned-paths) are NOT real packs — they predate the m4.5
 # owned-path (owns:) contract and must never be used for real runs (D20).
-# Upstream packs (two-pack, four-pack, six-pack, adversaries) are theirs, not
-# ours, and are validated against their own layout, not this manifest.
+# Upstream packs (two-pack, four-pack, adversaries) are theirs, not ours, and
+# are validated against their own layout, not this manifest. Our fork `six-pack`
+# below is a distinct branch distilled from solo-pack (m7), not the upstream one.
 solo-pack
+six-pack
