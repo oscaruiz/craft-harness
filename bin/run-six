@@ -1,0 +1,562 @@
+#!/usr/bin/env bash
+# craft-harness run-six — milestone 7: the six-pack.
+#
+#   run-six --project <path> --adapter <name-or-dir> [--pack <branch>]
+#           [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>]
+#           [--command-timeout <s>]
+#
+# A sequential runner of our own (no tmux, no daemon), the disciplined sibling of
+# run-solo. Four phases, each a fresh headless `invoke` (adapters/CONTRACT.md Mode
+# 1) in its own workdir with no inherited transcript; what one phase learned
+# reaches the next only through the structured handoff, validated before the next
+# phase starts. Phases:
+#   specify — spec + EXECUTABLE @ID Gherkin; the run PAUSES for owner approval
+#             (R6) and the approved scenario IDs are snapshotted at the gate.
+#   code    — implements the approved spec + step handlers, commits the candidate
+#             scoped to owns: on the enforced branch.
+#   harden  — behaviour-preserving quality pass (may advance the candidate); the
+#             runner enforces the declared quality commands (architecture = the
+#             architect role's criterion; cleaner folded in).
+#   qa      — independent verifier in a clean worktree at the candidate. Then the
+#             runner executes the declared acceptance command ITSELF and requires
+#             every approved scenario to PASS (executable Gherkin) — never by
+#             substring (D22/D27), never as the agent's own claim (D28).
+#
+# Honest boundaries (D29/D30): the claim is only that the declared commands ran
+# and the approved scenarios executed and passed against the candidate — not
+# semantic coverage, and not forgery-proof against a malicious same-user agent.
+set -euo pipefail
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+die() { echo "run-six: $*" >&2; exit 1; }
+usage() {
+  echo "usage: run-six --project <path> --adapter <name-or-dir> [--pack <branch>] [--phase-timeout <s>] [--retry-cap <n>] [--run-timeout <s>] [--command-timeout <s>]" >&2
+  exit 2
+}
+
+PROJECT=""; ADAPTER=""; PACK="six-pack"
+PHASE_TIMEOUT=0; RETRY_CAP=1; RUN_TIMEOUT=0; COMMAND_TIMEOUT=600
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    --adapter) ADAPTER="${2:-}"; shift 2 ;;
+    --pack) PACK="${2:-}"; shift 2 ;;
+    --phase-timeout) PHASE_TIMEOUT="${2:-}"; shift 2 ;;
+    --retry-cap) RETRY_CAP="${2:-}"; shift 2 ;;
+    --run-timeout) RUN_TIMEOUT="${2:-}"; shift 2 ;;
+    --command-timeout) COMMAND_TIMEOUT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$PROJECT" && -n "$ADAPTER" ]] || usage
+[[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+PROJECT="$(cd "$PROJECT" && pwd)"   # absolute — injected literals must match (D21)
+command -v bb >/dev/null 2>&1 || die "babashka (bb) is required"
+[[ "$COMMAND_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die "--command-timeout must be a positive integer"
+
+# Runner-private authentication anchor for retained evidence (D29/m6). Resolve it
+# before any phase, then remove the override from the phase environment.
+PRIVATE_STATE_ROOT="${CRAFT_HARNESS_PRIVATE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/craft-harness}"
+unset CRAFT_HARNESS_PRIVATE_STATE
+mkdir -p "$PRIVATE_STATE_ROOT"
+PRIVATE_STATE_ROOT="$(cd "$PRIVATE_STATE_ROOT" && pwd)"
+case "$PRIVATE_STATE_ROOT/" in
+  "$PROJECT"/*) die "runner-private state must be outside the project working tree: $PRIVATE_STATE_ROOT" ;;
+esac
+PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
+PRIVATE_EVIDENCE_DIR="$PRIVATE_STATE_ROOT/six/$PROJECT_STATE_ID"
+COMMAND_EVIDENCE_KEY="$PRIVATE_EVIDENCE_DIR/commands.key"
+
+# R6 precondition.
+[[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-six refuses to start without a task"
+
+# The real-project contract is required and fail-closed. The six-pack additionally
+# REQUIRES an executable acceptance command (accept:) — there is no executable
+# Gherkin without one.
+CONTRACT_PARSER="$FORK_ROOT/bin/parse-project"
+CONTRACT_OUT="$(bash "$CONTRACT_PARSER" "$PROJECT/project.prompt" 2>&1)" \
+  || die "invalid project contract — $CONTRACT_OUT"
+declare -a PROJECT_OWNS=() QUALITY_NAMES=() QUALITY_COMMANDS=()
+PROJECT_TEST_CMD=""; PROJECT_ACCEPT_CMD=""
+while IFS=$'\t' read -r kind a b; do
+  case "$kind" in
+    OWN) PROJECT_OWNS+=("$a") ;;
+    TEST) PROJECT_TEST_CMD="$a" ;;
+    QUALITY) QUALITY_NAMES+=("$a"); QUALITY_COMMANDS+=("$b") ;;
+    ACCEPT) PROJECT_ACCEPT_CMD="$a" ;;
+  esac
+done <<< "$CONTRACT_OUT"
+(( ${#PROJECT_OWNS[@]} > 0 )) || die "invalid project contract — no owned paths"
+[[ -n "$PROJECT_TEST_CMD" ]] || die "invalid project contract — no test command"
+[[ -n "$PROJECT_ACCEPT_CMD" ]] || die "invalid project contract — the six-pack requires an accept: command (executable Gherkin)"
+
+git -C "$PROJECT" diff --quiet && git -C "$PROJECT" diff --cached --quiet \
+  || die "tracked working tree is dirty — commit or stash tracked changes before running"
+
+# --- adapter resolution -----------------------------------------------------
+case "$ADAPTER" in
+  */*) ADAPTER_DIR="$ADAPTER" ;;
+  *) if [[ -d "$ADAPTER" ]]; then ADAPTER_DIR="$ADAPTER"; else ADAPTER_DIR="$FORK_ROOT/adapters/$ADAPTER"; fi ;;
+esac
+[[ -d "$ADAPTER_DIR" ]] || die "adapter '$ADAPTER' not found at $ADAPTER_DIR"
+for exe in invoke info; do
+  [[ -x "$ADAPTER_DIR/$exe" ]] || die "adapter '$ADAPTER': missing executable '$exe'"
+done
+
+# --- pack resolution: the six-pack branch owns phase CONTENT ----------------
+git -C "$FORK_ROOT" rev-parse --verify --quiet "$PACK^{commit}" >/dev/null 2>&1 \
+  || die "pack branch '$PACK' not found in the fork"
+PACK_CONF="$(git -C "$FORK_ROOT" show "$PACK:swarmforge/swarmforge.conf" 2>/dev/null)" \
+  || die "pack '$PACK' has no swarmforge/swarmforge.conf"
+declare -A PACK_ROLE=()
+CONF_PHASES=()
+while read -r kw name _agent role _rest; do
+  [[ "$kw" == "phase" ]] || continue
+  CONF_PHASES+=("$name")
+  PACK_ROLE["$name"]="${role:-$name}"
+done <<< "$PACK_CONF"
+SIX_SEQUENCE="specify code harden qa"
+[[ "${CONF_PHASES[*]}" == "$SIX_SEQUENCE" ]] \
+  || die "pack '$PACK' phase list (${CONF_PHASES[*]:-none}) does not match run-six's phase sequence ($SIX_SEQUENCE)"
+for ph in $SIX_SEQUENCE; do
+  git -C "$FORK_ROOT" show "$PACK:swarmforge/roles/${PACK_ROLE[$ph]}.prompt" >/dev/null 2>&1 \
+    || die "pack '$PACK' missing role prompt for phase '$ph' (swarmforge/roles/${PACK_ROLE[$ph]}.prompt)"
+done
+load_role_body() { git -C "$FORK_ROOT" show "$PACK:swarmforge/roles/${PACK_ROLE[$1]}.prompt"; }
+
+# --- paths ------------------------------------------------------------------
+STATE="$PROJECT/.craft-harness/six/current"
+SPEC="$STATE/spec"
+HANDOFFS="$STATE/handoffs"
+LOGS="$STATE/logs"
+APPROVAL="$STATE/approval"
+PROMPTS="$STATE/prompts"
+MANIFEST="$STATE/manifest.json"
+PHASES_TSV="$STATE/phases.tsv"
+COMMANDS_TSV="$STATE/commands.tsv"
+ACCEPT_REPORT="$STATE/accept-report.ndjson"
+APPROVED_SCENARIOS="$SPEC/approved-scenarios.txt"
+STATUS="$STATE/status"
+FAILURE="$STATE/failure"
+VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
+MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
+ACCEPT_PARSER="$FORK_ROOT/bin/parse-accept-report.bb"
+
+now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+set_status() { printf '%s\n' "$1" > "$STATUS"; }
+
+finalize_handoff() { # <phase> <to> [commit]
+  local phase="$1" to="$2" commit="${3:-}"
+  local h="$HANDOFFS/$phase.handoff"
+  [[ -f "$h" ]] || fail_phase "$phase" "no handoff body written to $h"
+  local body; body="$(cat "$h")"
+  {
+    echo "id: $(date -u +%Y%m%dT%H%M%S%NZ)_$phase"
+    echo "from: $phase"; echo "to: $to"; echo "phase: $phase"
+    echo "created_at: $(now_iso)"
+    [[ -n "$commit" ]] && echo "commit: $commit"
+    echo
+    printf '%s\n' "$body"
+  } > "$h"
+}
+
+VWD=""
+cleanup_worktree() { [[ -n "$VWD" ]] && git -C "$PROJECT" worktree remove --force "$VWD" 2>/dev/null || true; }
+trap cleanup_worktree EXIT
+
+ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
+
+# The authenticator covers the runner-owned command record AND the executable-
+# Gherkin evidence (the acceptance report + the approved-scenario snapshot), so a
+# structurally plausible post-run edit to any of them fails inspection (D29).
+# Accidental-tamper-evident only, NOT forgery-proof against a malicious same-user
+# agent (D30). inspect-run recomputes with the identical recipe.
+command_evidence_mac() {
+  local candidate; candidate="$(cat "$STATE/candidate_commit" 2>/dev/null || true)"
+  { cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$candidate"; \
+    cat "$COMMANDS_TSV" 2>/dev/null || true; \
+    cat "$ACCEPT_REPORT" 2>/dev/null || true; \
+    cat "$APPROVED_SCENARIOS" 2>/dev/null || true; \
+    cat "$COMMAND_EVIDENCE_KEY"; } | sha256sum | awk '{print $1}'
+}
+
+write_manifest() { # <outcome>
+  local mac=""
+  if [[ -f "$COMMAND_EVIDENCE_KEY" && -f "$COMMANDS_TSV" ]]; then mac="$(command_evidence_mac)"; fi
+  local args=(
+    "$MANIFEST" "$PHASES_TSV"
+    "pack=$PACK" "project=$PROJECT" "adapter=$ADAPTER" "adapter_info=$ADAPTER_INFO"
+    "fork_commit=$(git -C "$FORK_ROOT" rev-parse HEAD)"
+    "enforced_branch=$(cat "$STATE/enforced_branch" 2>/dev/null || echo '?')"
+    "baseline_commit=$(cat "$STATE/baseline_commit" 2>/dev/null || echo '?')"
+    "candidate_commit=$(cat "$STATE/candidate_commit" 2>/dev/null || echo '')"
+    "retry_cap=$RETRY_CAP" "phase_timeout_s=$PHASE_TIMEOUT" "run_timeout_s=$RUN_TIMEOUT"
+    "command_timeout_s=$COMMAND_TIMEOUT"
+    "command_evidence_mac=$mac"
+    "outcome=$1"
+  )
+  bb "$MANIFEST_BB" "${args[@]}" >/dev/null
+}
+
+initialize_command_evidence_key() {
+  mkdir -p "$PRIVATE_EVIDENCE_DIR"
+  chmod 700 "$PRIVATE_STATE_ROOT/six" "$PRIVATE_EVIDENCE_DIR"
+  if [[ ! -f "$COMMAND_EVIDENCE_KEY" ]]; then
+    umask 077
+    head -c 32 /dev/urandom > "$COMMAND_EVIDENCE_KEY"
+  fi
+  chmod 600 "$COMMAND_EVIDENCE_KEY"
+}
+
+fail_phase() { # <phase> <reason>
+  printf 'FAILED at phase %s: %s\n' "$1" "$2" > "$FAILURE"
+  set_status "failed"
+  write_manifest "failed"
+  die "phase '$1' failed: $2"
+}
+
+write_prompt() { printf 'PHASE: %s\n\n%s\n' "$1" "$2" > "$PROMPTS/$1.prompt"; }
+
+handoff_instructions() { # <phase>
+  local dest="$HANDOFFS/$1.handoff"
+  cat <<EOF
+Write your handoff to this exact absolute file path, given literally on the next line:
+HANDOFF_PATH: $dest
+Use that literal path. It is also exported as \$SIX_HANDOFF, but do NOT rely on shell/variable expansion — write to the literal path above. Write ONLY these five markdown sections, each introduced by a '# ' heading, in this exact order — do NOT write any id/from/to/created_at header and do NOT put a title before the first section (the runner adds the routing header itself):
+
+# done
+- <what this phase actually accomplished>
+# decisions
+- <choices you made and why — this MUST be non-empty if you changed or committed anything>
+# assumptions
+- <what you took for granted>
+# open items
+- <unresolved items for a later phase, or '- none'>
+# commands executed
+- <the commands you ran>
+
+Every section must be present. Use bullet lines under each heading.
+EOF
+}
+
+test_cmd_instructions() { # <command>
+  cat <<EOF
+The project's declared test command is given literally on the next line — run it exactly as written to check your work (it is the project's own test entrypoint; do NOT assume any hard-coded test script):
+TEST_CMD: $1
+Run that command exactly as written above; the paragraphs that follow are separate instructions.
+EOF
+}
+
+accept_cmd_instructions() { # <command>
+  cat <<EOF
+The project's declared acceptance command is given literally on the next line — this is what the runner runs at the candidate to enforce that every approved scenario passes (executable Gherkin):
+ACCEPT_CMD: $1
+Treat that literal command as the acceptance entrypoint; the paragraphs that follow are separate instructions.
+EOF
+}
+
+seed_prompts() {
+  mkdir -p "$PROMPTS"
+  write_prompt specify "$(load_role_body specify) $(handoff_instructions specify)"
+  write_prompt code    "$(load_role_body code) $(test_cmd_instructions "$PROJECT_TEST_CMD") $(handoff_instructions code)"
+  write_prompt harden  "$(load_role_body harden) $(test_cmd_instructions "$PROJECT_TEST_CMD") $(handoff_instructions harden)"
+  write_prompt qa      "$(load_role_body qa) $(test_cmd_instructions "$PROJECT_TEST_CMD") $(accept_cmd_instructions "$PROJECT_ACCEPT_CMD") $(handoff_instructions qa)"
+}
+
+RUN_START="$(date +%s)"
+check_run_deadline() { # <phase>
+  [[ "$RUN_TIMEOUT" -gt 0 ]] || return 0
+  if (( $(date +%s) - RUN_START >= RUN_TIMEOUT )); then
+    fail_phase "$1" "whole-run timeout (${RUN_TIMEOUT}s) exceeded before phase could finish"
+  fi
+}
+
+run_phase() { # <name> <workdir>
+  local name="$1" wd="$2" rc=0
+  set_status "running_$name"
+  local runner=(bash "$ADAPTER_DIR/invoke" --workdir "$wd" --prompt-file "$PROMPTS/$name.prompt")
+  if [[ "$PHASE_TIMEOUT" -gt 0 ]]; then
+    runner=(bash "$FORK_ROOT/adapters/run-with-timeout" "$PHASE_TIMEOUT" -- "${runner[@]}")
+  fi
+  SIX_HANDOFF="$HANDOFFS/$name.handoff" \
+  SIX_SPEC_DIR="$SPEC" \
+  SIX_PHASE="$name" \
+  SIX_PROJECT="$PROJECT" \
+  SIX_DIFF="$STATE/diff.patch" \
+  SIX_HANDOFFS_DIR="$HANDOFFS" \
+    "${runner[@]}" > "$LOGS/$name.log" 2>&1 || rc=$?
+  return $rc
+}
+
+run_phase_with_retries() { # <name> <workdir>
+  local name="$1" wd="$2" attempt=1 rc=0 last=""
+  check_run_deadline "$name"
+  while (( attempt <= RETRY_CAP )); do
+    rc=0
+    run_phase "$name" "$wd" || rc=$?
+    if (( rc == 0 )); then return 0; fi
+    if (( rc == 124 )); then last="per-phase timeout (${PHASE_TIMEOUT}s)"; else last="invoke failed (rc=$rc)"; fi
+    echo "run-six: phase '$name' attempt $attempt/$RETRY_CAP failed — $last" >&2
+    attempt=$(( attempt + 1 ))
+    check_run_deadline "$name"
+  done
+  fail_phase "$name" "exhausted retry cap ($RETRY_CAP); last failure: $last"
+}
+
+validate_phase_handoff() { # <name> [--changed]
+  local name="$1"; shift || true
+  local h="$HANDOFFS/$name.handoff"
+  [[ -f "$h" ]] || fail_phase "$name" "no structured handoff written to $h"
+  bb "$VALIDATE" "$h" "$@" 2>"$STATE/.verr" \
+    || fail_phase "$name" "invalid handoff — $(tr -d '\n' < "$STATE/.verr")"
+}
+
+record_phase() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$PHASES_TSV"; }
+
+enforce_owned_scope() { # <baseline> <candidate>
+  local baseline="$1" candidate="$2"
+  local -a offenders=()
+  local path g ok
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    ok=0
+    for g in "${PROJECT_OWNS[@]}"; do [[ "$path" == $g ]] && { ok=1; break; }; done
+    (( ok )) || offenders+=("$path")
+  done < <(git -C "$PROJECT" diff --name-only "$baseline" "$candidate")
+  if (( ${#offenders[@]} > 0 )); then
+    fail_phase code "candidate commit touches paths outside the owned set (owns: ${PROJECT_OWNS[*]}); offending paths: ${offenders[*]}"
+  fi
+}
+
+ensure_commit_identity() { # D23
+  if git -C "$PROJECT" config user.name  >/dev/null 2>&1 \
+  && git -C "$PROJECT" config user.email >/dev/null 2>&1; then return 0; fi
+  git -C "$PROJECT" config user.name  "craft-harness"
+  git -C "$PROJECT" config user.email "noreply@craft-harness.local"
+}
+
+run_project_command() { # <label> <command> <workdir>
+  local label="$1" command="$2" wd="$3" safe rc=0 start duration
+  safe="${label//:/-}"
+  start="$(date +%s)"
+  set_status "running_$safe"
+  bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
+    bash -c 'cd "$1" && exec bash -c "$2"' _ "$wd" "$command" \
+    > "$LOGS/command-$safe.log" 2>&1 || rc=$?
+  duration=$(( $(date +%s) - start ))
+  printf '%s\t%s\t%s\t%s\n' "$label" "$duration" "$rc" "$command" >> "$COMMANDS_TSV"
+  if (( rc != 0 )); then
+    if (( rc == 124 )); then fail_phase "$label" "declared command timed out after ${COMMAND_TIMEOUT}s: $command"; fi
+    fail_phase "$label" "declared command failed (rc=$rc): $command"
+  fi
+}
+
+# The executable-Gherkin gate: run the declared acceptance command ourselves (the
+# runner, not the agent) with CRAFT_ACCEPT_REPORT pointed at a runner-owned path
+# OUTSIDE the candidate worktree, so producing the report is not a worktree
+# mutation and the report survives teardown. The command is a reporter (exit 0);
+# the verdict is ours, from the report.
+run_accept_command() { # <workdir>
+  local wd="$1" rc=0 start duration
+  : > "$ACCEPT_REPORT"
+  start="$(date +%s)"
+  set_status "running_accept"
+  CRAFT_ACCEPT_REPORT="$ACCEPT_REPORT" \
+    bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
+    bash -c 'cd "$1" && CRAFT_ACCEPT_REPORT="$3" exec bash -c "$2"' _ "$wd" "$PROJECT_ACCEPT_CMD" "$ACCEPT_REPORT" \
+    > "$LOGS/command-accept.log" 2>&1 || rc=$?
+  duration=$(( $(date +%s) - start ))
+  printf '%s\t%s\t%s\t%s\n' "accept" "$duration" "$rc" "$PROJECT_ACCEPT_CMD" >> "$COMMANDS_TSV"
+  if (( rc != 0 )); then
+    if (( rc == 124 )); then fail_phase accept "declared acceptance command timed out after ${COMMAND_TIMEOUT}s"; fi
+    fail_phase accept "declared acceptance command failed (rc=$rc): $PROJECT_ACCEPT_CMD"
+  fi
+}
+
+# Enforce that EVERY approved scenario (the R6-gate snapshot) is reported passed
+# — structurally, via the report parser, never by substring (D22/D27).
+enforce_approved_scenarios() {
+  [[ -f "$APPROVED_SCENARIOS" ]] || fail_phase qa "approved-scenario snapshot is missing ($APPROVED_SCENARIOS)"
+  [[ -s "$APPROVED_SCENARIOS" ]] || fail_phase qa "no approved scenarios were snapshotted at the gate"
+  local parsed
+  parsed="$(bb "$ACCEPT_PARSER" "$ACCEPT_REPORT" 2>"$STATE/.aerr")" \
+    || fail_phase qa "acceptance report is unparseable — $(tr -d '\n' < "$STATE/.aerr")"
+  declare -A passed=()
+  local id st
+  while IFS=$'\t' read -r id st; do
+    [[ -n "$id" ]] || continue
+    [[ "$st" == passed ]] && passed["$id"]=1
+  done <<< "$parsed"
+  local -a missing=()
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ -n "${passed[$id]:-}" ]] || missing+=("$id")
+  done < "$APPROVED_SCENARIOS"
+  if (( ${#missing[@]} > 0 )); then
+    fail_phase qa "executable acceptance did not pass every approved scenario; scenarios not passed: ${missing[*]}"
+  fi
+}
+
+# --- specify + gate (fresh start) -------------------------------------------
+start_fresh() {
+  initialize_command_evidence_key
+  mkdir -p "$SPEC" "$HANDOFFS" "$LOGS" "$APPROVAL" "$PROMPTS"
+  : > "$PHASES_TSV"
+  : > "$COMMANDS_TSV"
+  git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$STATE/enforced_branch"
+  git -C "$PROJECT" rev-parse HEAD > "$STATE/baseline_commit"
+  seed_prompts
+
+  local start; start="$(date +%s)"
+  run_phase_with_retries specify "$PROJECT"
+  finalize_handoff specify code
+  validate_phase_handoff specify
+  record_phase specify "$(( $(date +%s) - start ))" ok
+
+  # Snapshot the approved scenario IDs at the gate — the executable-traceability
+  # contract. Captured now so a later phase cannot silently change the approved set.
+  grep -rhoE '@[A-Z][A-Z0-9]*-[0-9]+' "$SPEC/features" 2>/dev/null \
+    | sed 's/^@//' | sort -u > "$APPROVED_SCENARIOS" || true
+  [[ -s "$APPROVED_SCENARIOS" ]] \
+    || fail_phase specify "the specifier produced no @ID-tagged scenarios — executable Gherkin needs at least one"
+
+  local token
+  token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 32)"
+  printf '%s' "$token" | sha256sum | awk '{print $1}' > "$APPROVAL/token.sha256"
+  set_status "awaiting_approval"
+  write_manifest "awaiting_approval"
+  echo "run-six: specify complete — spec at $SPEC (review spec.md and features/)."
+  echo "run-six: approved scenarios: $(tr '\n' ' ' < "$APPROVED_SCENARIOS")"
+  echo "run-six: APPROVAL REQUIRED (R6). To approve the spec, write the token below to:"
+  echo "run-six:   $APPROVAL/APPROVED"
+  echo "run-six: then re-run: run-six --project '$PROJECT' --adapter '$ADAPTER' --pack '$PACK'"
+  echo "APPROVAL_TOKEN: $token"
+  exit 0
+}
+
+approved() {
+  [[ -f "$APPROVAL/APPROVED" ]] || return 1
+  local given expected
+  given="$(printf '%s' "$(cat "$APPROVAL/APPROVED")" | sha256sum | awk '{print $1}')"
+  expected="$(cat "$APPROVAL/token.sha256" 2>/dev/null || true)"
+  [[ -n "$expected" && "$given" == "$expected" ]]
+}
+
+# advance the candidate through a committing phase; returns via $STATE/candidate_commit.
+record_candidate_after() { # <phase> <prev-commit>
+  local phase="$1" prev="$2" head
+  head="$(git -C "$PROJECT" rev-parse HEAD)"
+  echo "$head" > "$STATE/candidate_commit"
+  [[ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" == "$(cat "$STATE/enforced_branch")" ]] \
+    || fail_phase "$phase" "agent switched away from the enforced branch"
+  git -C "$PROJECT" merge-base --is-ancestor "$prev" "$head" \
+    || fail_phase "$phase" "candidate is not descended from the previous commit"
+}
+
+# --- code + harden + qa + gates (after approval) ----------------------------
+run_rest() {
+  local start
+  seed_prompts
+  ensure_commit_identity
+
+  local baseline; baseline="$(cat "$STATE/baseline_commit")"
+
+  # code phase — commits the candidate on the enforced branch.
+  start="$(date +%s)"
+  run_phase_with_retries code "$PROJECT"
+  record_candidate_after code "$baseline"
+  finalize_handoff code harden "$(git -C "$PROJECT" rev-parse --short=10 HEAD)"
+  validate_phase_handoff code --changed
+  record_phase code "$(( $(date +%s) - start ))" ok
+  local candidate; candidate="$(cat "$STATE/candidate_commit")"
+  [[ "$candidate" != "$baseline" ]] || fail_phase code "no candidate commit produced (HEAD unchanged)"
+  enforce_owned_scope "$baseline" "$candidate"
+
+  # harden phase — behaviour-preserving; MAY advance the candidate.
+  start="$(date +%s)"
+  local before_harden="$candidate"
+  run_phase_with_retries harden "$PROJECT"
+  local after_harden; after_harden="$(git -C "$PROJECT" rev-parse HEAD)"
+  if [[ "$after_harden" != "$before_harden" ]]; then
+    record_candidate_after harden "$before_harden"
+    candidate="$(cat "$STATE/candidate_commit")"
+    enforce_owned_scope "$baseline" "$candidate"
+    finalize_handoff harden qa "$(git -C "$PROJECT" rev-parse --short=10 HEAD)"
+    validate_phase_handoff harden --changed
+  else
+    finalize_handoff harden qa
+    validate_phase_handoff harden
+  fi
+  record_phase harden "$(( $(date +%s) - start ))" ok
+
+  # qa phase — independent verifier in a clean worktree at the final candidate.
+  git -C "$PROJECT" diff "$baseline" "$candidate" > "$STATE/diff.patch"
+  local vwd="$STATE/qa-workdir"
+  rm -rf "$vwd"
+  git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
+  local verify_at="$candidate"
+  [[ "${CRAFT_SIX_TEST_QA_AT_BASELINE:-}" == "1" ]] && verify_at="$baseline"
+  VWD="$vwd"
+  git -C "$PROJECT" worktree add --detach "$vwd" "$verify_at" >/dev/null 2>&1 \
+    || fail_phase qa "could not create qa worktree at $verify_at"
+  start="$(date +%s)"
+  run_phase_with_retries qa "$vwd"
+  finalize_handoff qa done
+  validate_phase_handoff qa
+  record_phase qa "$(( $(date +%s) - start ))" ok
+  if [[ -n "$(git -C "$vwd" status --porcelain --untracked-files=all)" ]]; then
+    fail_phase qa "verifier modified its supposedly read-only candidate worktree"
+  fi
+  git -C "$PROJECT" worktree remove --force "$vwd" 2>/dev/null || true
+  VWD=""
+
+  # Runner-owned gates (D27/D28): a fresh clean worktree at the final candidate,
+  # then execute the exact project commands ourselves — test, ordered quality
+  # (architecture = architect's criterion), and finally the executable-Gherkin
+  # acceptance gate.
+  VWD="$STATE/gate-workdir"
+  git -C "$PROJECT" worktree add --detach "$VWD" "$candidate" >/dev/null 2>&1 \
+    || fail_phase test "could not create command worktree at $candidate"
+  run_project_command test "$PROJECT_TEST_CMD" "$VWD"
+  local i
+  for ((i=0; i<${#QUALITY_NAMES[@]}; i++)); do
+    run_project_command "quality:${QUALITY_NAMES[$i]}" "${QUALITY_COMMANDS[$i]}" "$VWD"
+  done
+  run_accept_command "$VWD"
+  enforce_approved_scenarios
+  git -C "$PROJECT" worktree remove --force "$VWD" 2>/dev/null || true
+  VWD=""
+
+  set_status "inspecting"
+  write_manifest "success"
+  if ! CRAFT_HARNESS_PRIVATE_STATE="$PRIVATE_STATE_ROOT" \
+      bash "$FORK_ROOT/bin/inspect-run" "$STATE" "$PROJECT" > "$STATE/inspect-report.txt" 2>&1; then
+    fail_phase inspect "post-run inspector rejected the evidence (see $STATE/inspect-report.txt)"
+  fi
+  set_status "done"
+  write_manifest "success"
+  cat "$STATE/inspect-report.txt"
+  echo "run-six: SUCCESS — all phases and runner-owned gates complete; evidence under $STATE"
+}
+
+# --- dispatch ---------------------------------------------------------------
+if [[ ! -d "$STATE" ]]; then
+  start_fresh
+fi
+
+case "$(cat "$STATUS" 2>/dev/null || echo unknown)" in
+  awaiting_approval)
+    if approved; then
+      echo "run-six: spec approved — resuming into code, harden and qa."
+      run_rest
+    else
+      echo "run-six: still AWAITING APPROVAL — the spec has not been approved yet."
+      echo "run-six:   write the approval token to $APPROVAL/APPROVED, then re-run."
+      exit 0
+    fi
+    ;;
+  done)   echo "run-six: this session is already complete (status=done)."; exit 0 ;;
+  failed) die "previous run failed ($(cat "$FAILURE" 2>/dev/null)). Remove $STATE to restart." ;;
+  running_*) die "session in flight ($(cat "$STATUS")) — refusing to clobber. Investigate or remove $STATE to restart (R8)." ;;
+  *) die "unrecognized session state; remove $STATE to restart." ;;
+esac

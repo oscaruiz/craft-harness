@@ -25,4 +25,8 @@
                    (map str/trim)
                    (remove #(or (str/blank? %) (str/starts-with? % "#")))
                    set)]
-    (is (= #{"solo-pack"} packs))))
+    (testing "the retired two-pack-lite is never a registered installable pack (D28)"
+      (is (not (contains? packs "two-pack-lite"))))
+    (testing "the supported packs are the fork's own light path and the six-pack (m7)"
+      (is (contains? packs "solo-pack"))
+      (is (= #{"solo-pack" "six-pack"} packs)))))

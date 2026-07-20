@@ -26,7 +26,9 @@ if [[ -f acceptance/steps.sh ]]; then
 fi
 
 emit() { printf '{"scenario":"%s","status":"%s"}\n' "$1" "$2" >> "$report"; }
-id_of() { grep -oE '@[A-Z][A-Z0-9]*-[0-9]+' <<<"$1" | head -1; }
+# The scenario ID is the tag WITHOUT its '@' marker (schema: "SUT-1", not "@SUT-1"),
+# matching the runner's approved-scenario snapshot.
+id_of() { grep -oE '@[A-Z][A-Z0-9]*-[0-9]+' <<<"$1" | head -1 | sed 's/^@//'; }
 
 cur_id=""; declare -a STEPS=()
 run_current() {
