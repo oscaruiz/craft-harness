@@ -1,55 +1,20 @@
-export SWARMFORGE_ROLE=coder && export CRAFT_WRAPPER_LOG=/mnt/d/Dev/craft-harnes
-s/docs/evidence/m3/real-run/logs/wrappers.log && export PATH=/mnt/d/Dev/craft-ha
-rness/tools/toy:/tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a
-3-b994fc303d4f/scratchpad/m3-real/project/swarmforge/scripts:/home/oscar/.local/
-bin:/home/oscar/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Users/oscar/AppData/Roaming
-/Code/User/globalStorage/github.copilot-chat/debugCommand:/mnt/c/Users/oscar/App
-Data/Roaming/Code/User/globalStorage/github.copilot-chat/copilotCli:/mnt/c/Windo
-ws/system32:/mnt/c/Windows:/mnt/c/Windows/System32/Wbem:/mnt/c/Windows/System32/
-WindowsPowerShell/v1.0/:/mnt/c/Windows/System32/OpenSSH/:/mnt/c/Program\ Files\
-\(x86\)/NVIDIA\ Corporation/PhysX/Common:/mnt/c/Program\ Files/NVIDIA\ Corporati
-on/NVIDIA\ NvDLISR:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System3
-2/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/:/mnt/c/WINDOWS/System32/O
-penSSH/:/mnt/c/Program\ Files/dotnet/:/mnt/c/Program\ Files/Git/cmd:/mnt/c/Progr
-am\ Files/Docker/Docker/resources/bin:/mnt/c/Users/oscar/AppData/Roaming/nvm:/mn
-t/c/Program\ Files/nodejs:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program\ File
-s\ \(x86\)/Google/Cloud\ SDK/google-cloud-sdk/bin:/mnt/c/Program\ Files/nodejs/:
-/mnt/c/Program\ Files/Calibre2/:/mnt/c/Program\ Files/GitHub\ CLI/:/mnt/c/Users/
-oscar/AppData/Local/Programs/Python/Python311/Scripts/:/mnt/c/Users/oscar/AppDat
-a/Local/Programs/Python/Python311/:/mnt/c/Users/oscar/AppData/Local/Programs/Pyt
-hon/Python38/Scripts/:/mnt/c/Users/oscar/AppData/Local/Programs/Python/Python38/
-:/mnt/c/Users/oscar/AppData/Local/Microsoft/WindowsApps:/mnt/c/Program\ Files\ \
-(x86\)/GnuWin32/bin:/mnt/c/MinGW/bin:/mnt/c/Users/oscar/AppData/Local/Programs/M
-icrosoft\ VS\ Code/bin:/mnt/c/Users/oscar/AppData/Roaming/nvm:/mnt/c/Program\ Fi
-les/nodejs:/mnt/c/Users/oscar/AppData/Local/GitHubDesktop/bin:/mnt/c/Users/oscar
-/AppData/Roaming/npm:/mnt/c/Users/oscar/.local/bin:/snap/bin:"$PATH" && cd /tmp/
-claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratc
-hpad/m3-real/project && claude --append-system-prompt-file /tmp/claude-1000/-mnt
--d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/pro
-ject/swarmforge/roles/coder.prompt --permission-mode acceptEdits -n SwarmForge\
-coder "$(cat /mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/prompts/coder.in
-struction)"
-oscar@DELL:/mnt/d/Dev/craft-harness$ export SWARMFORGE_ROLE=coder && export CRAF
-T_WRAPPER_LOG=/mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/logs/wrappers.l
-og && export PATH=/mnt/d/Dev/craft-harness/tools/toy:/tmp/claude-1000/-mnt-d-Dev
--craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project/s
-warmforge/scripts:/home/oscar/.local/bin:/home/oscar/bin:/usr/local/sbin:/usr/lo
-cal/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/l
-ib:/mnt/c/Users/oscar/AppData/Roaming/Code/User/globalStorage/github.copilot-cha
-t/debugCommand:/mnt/c/Users/oscar/AppData/Roaming/Code/User/globalStorage/github
-.copilot-chat/copilotCli:/mnt/c/Windows/system32:/mnt/c/Windows:/mnt/c/Windows/S
+# NOTE: the local PATH inventory and the user@host prompt were redacted from this
+# captured log (machine fingerprint, no evidential value). The meaningful part —
+# tools/toy and the scratchpad swarmforge/scripts shims taking precedence — is kept.
+export SWARMFORGE_ROLE=coder && export CRAFT_WRAPPER_LOG=/mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/logs/wrappers.log && export PATH=/mnt/d/Dev/craft-harness/tools/toy:/tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project/swarmforge/scripts:<REDACTED_LOCAL_PATH>:"$PATH" && cd /tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project && claude --append-system-prompt-file /tmp/claude-1000/-mnt-d-Dev-craft-harness/7ec537fe-ffd2-43b4-a1a3-b994fc303d4f/scratchpad/m3-real/project/swarmforge/roles/coder.prompt --permission-mode acceptEdits -n SwarmForge\ coder "$(cat /mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/prompts/coder.instruction)"
+user@host:/mnt/d/Dev/craft-harness$ export SWARMFORGE_ROLE=coder && export CRAFT_WRAPPER_LOG=/mnt/d/Dev/craft-harness/docs/evidence/m3/real-run/logs/wrappers.log && export PATH=/mnt/d/Dev/craft-harness/tools/toy:<REDACTED_LOCAL_PATH>:"$PATH"
+
   the coder role, and task.md.
   - Confirmed my assigned worktree is master → worked in the main checkout on
   branch main, per workflow rules.
-  - Confirmed the failing state: sut.sh printed broken, ./test.sh exited 1.
+  - Confirmed the failing state: sut.sh printed broken, ./test.sh exited 1.
   - Fixed sut.sh to print exactly 42 (the sole behavior change; test.sh is the
   spec and was untouched, as required).
 
   Verification
-  - ./test.sh → exit 0.
-  - Quality gates (wrappers only): crap: result=pass (score 0/threshold 6), dry:
-  result=pass (score 0/threshold 0).
+  - ./test.sh → exit 0.
+  - Quality gates (wrappers only): crap: result=pass (score 0/threshold 6), dry:
+  result=pass (score 0/threshold 0).
 
   Commit & handoff
   - Committed on main: e8c0cf7 Fix sut.sh to print 42 so test.sh passes.
@@ -60,6 +25,6 @@ t/debugCommand:/mnt/c/Users/oscar/AppData/Roaming/Code/User/globalStorage/github
 ✻ Brewed for 2m 4s
 
 ──────────────────────────────────────────────────────────── SwarmForge coder ──
-❯ 
+❯
 ────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ accept edits on (shift+tab to cycle) · ← for agents
