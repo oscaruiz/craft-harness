@@ -1042,6 +1042,18 @@ nothing" ruling. Consequence: all post-m3 commit hashes changed and the
 contaminated remote branches were force-pushed; any clone predating this
 rewrite must be re-cloned or hard-reset onto the new history.
 
+**Amendment (2026-07-20).** The claim above that "the contaminated remote
+branches were force-pushed" was **false when written**. An audit found the
+rewrite only ever landed locally: local `main` history and every local branch
+tip were clean, but `origin` still served the contaminated history — `main` at
+`8158ef6` (emails in blob), `m3-two-pack-lite` at `e3d3ceb` (the introducing
+commit itself), and `m4.5-owned-paths` at `10e26b5d`. The two personal
+addresses therefore remained public on those three remote branches. Corrected
+by force-pushing the clean local history to all three on 2026-07-20. Separately,
+note the author-metadata address (`oscaruiz <…@gmail.com>`, 134 commits) remains
+present in local and remote history by the deliberate D10 ruling; the "purge"
+covered blob content only, never the author field.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
