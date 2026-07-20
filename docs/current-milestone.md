@@ -1,51 +1,89 @@
-# v0.1 complete — executable real-project gates with honest boundaries
+# m7 — the six-pack: full domain pipeline with executable Gherkin (v0.2)
 
-The D27 external audit found live fixtures-mirror-the-toy blindness. D28 closes
-the implementation gaps without treating agent prose or TUI capture as a
-verdict. The m6 follow-up makes retained command evidence tamper-evident against
-non-malicious alteration; D29 and D30 state the semantic and threat-model limits
-without presenting them as executable guarantees.
+v0.1 is complete and sealed (D28–D31): `solo-pack` is the one supported light
+path, project gates are runner-owned (the runner executes the declared `test:`
+and ordered `quality:` commands itself in a fresh candidate worktree, authenticates
+`commands.tsv`, and prints `SUCCESS` only after `inspect-run` passes), and the
+honest boundaries are documented — no semantic-coverage promise (D29), no
+malicious-forgery-proof claim (D30). The prior milestone doc is preserved in git
+history; this file now tracks the active milestone, m7.
 
-**Status: v0.1 complete.** D28, m6, D29 and D30 are delivered. D8 is closed with
-the recorded external-environment caveat: Claude Code is fully adapter-scenario
-certified; Codex has demonstrated real repository operation through three
-adversarial audits but its formal scenario cannot initialize in this WSL
-environment, including outside the harness.
+## Goal
 
-## Delivered behavior
+Deliver the `six-pack`: a fuller domain pipeline with four **runner-enforced**
+roles and the defining new control — **executable Gherkin**. Where solo-pack's
+Gherkin is *documental* (a verifier reads `.feature` files and asserts each `@ID`
+is "satisfied" — advisory by design, D29), six-pack's Gherkin must **actually run**
+and the runner must **verify it ran**: every human-approved scenario ID must appear
+**passed** in a machine-readable acceptance report the runner produces itself. This
+is the one place traceability stops being advisory and becomes an executable gate.
 
-- `solo-pack` is the only registered light path; `two-pack-lite` is historical
-  and `run-pack` refuses execution.
-- `project.prompt` requires a strict non-empty `owns:` block and exact `test:`
-  command; optional named `quality:` commands run in declaration order.
-- `run-solo` rejects dirty tracked baselines, branch switching, non-descendant
-  or out-of-scope candidates, and verifier worktree mutations.
-- After agent phases, the runner executes the declared commands in a fresh
-  candidate worktree with a per-command timeout and durable exact evidence.
-- `run-solo` invokes `inspect-run` and reports success only after inspection.
-- The inspector makes no mutation, toy-CRAP/DRY, or substring-traceability
-  claims; real quality gates exist only when the project declares real commands.
-- The exact guarantee is that declared commands ran and succeeded, not that they
-  semantically cover every changed module or scenario; scenario traceability is
-  advisory by design (D29).
-- Retained command evidence detects accidental/non-malicious tampering. The
-  same-user agent model does not defend against malicious forgery; OS isolation
-  is the explicitly deferred v2 security path (D30).
+The build is governed by the project's most productive defect class,
+**"fixtures-mirror-the-toy blindness"** (D20/D21/D22/D23/D27): the non-toy,
+multi-module fixture is built **first, in red**, and every gate is proven against
+it. A planted **unimplemented scenario** MUST turn the run red.
+
+## Phases and runner-enforced exit criteria
+
+Sequence `specify → code → harden → qa` (asserted against the pack conf, exactly
+as `run-solo` asserts its solo sequence).
+
+- **specify** (specifier): writes spec + executable `@ID`-tagged `.feature` files,
+  then pauses at the R6 human token gate. Runner-enforced: features parse and yield
+  ≥1 tagged scenario; the approved scenario IDs are snapshotted at the gate as the
+  executable-traceability contract.
+- **code** (coder): implements the impl + acceptance features + step handlers and
+  commits the candidate on the enforced branch. Runner-enforced: candidate ≠
+  baseline, descends baseline, on branch, owned-scope clean; the runner runs the
+  declared `test:` command green.
+- **harden** (hardener): quality/cleanup within owns (may advance the candidate;
+  cleaner is folded in here). Runner-enforced: re-scoped + `test:` still green; the
+  runner runs the ordered `quality:` commands green — including the **architecture**
+  command (the architect role's runner-enforced criterion).
+- **qa** (QA): independent verifier in a clean worktree at the final candidate.
+  Runner-enforced: the worktree is unmutated, and the runner runs the declared
+  `accept:` command **itself** and enforces that every approved scenario ID appears
+  `passed` in the report (the executable-Gherkin gate).
+
+## Honest boundaries (carried from D29/D30, not re-litigated)
+
+- The claim is "the approved scenarios executed and passed against the candidate",
+  never semantic coverage of the domain (D29).
+- The runner executes `accept:`/`test:`/`quality:` itself and acts on the live
+  process exit status (D30's one surviving adversarial guarantee). Retained report
+  and command evidence is accidental-tamper-evident only, not forgery-proof against
+  a malicious same-user agent (D30).
+
+## Documented degradation (design §5/§7.7/§8 already carve these out)
+
+- **No gherkin-mutator** (§5 "No Gherkin mutation in v0.1", carried into m7).
+- **No Playwright-UI automation**; `accept:` is language/UI-agnostic and a TS
+  project can later declare a Playwright-emitting `accept:` command.
+- Single primary candidate: harden may advance it; architect/cleaner are not
+  separate committing phases. Scenario *text* fidelity stays advisory (D29);
+  scenario *execution + pass of approved IDs* is enforced.
 
 ## Exit criteria
 
-- Strict-contract parser negatives and exact ordered output are green.
-- A verifier that only claims success cannot bypass a failing runner-owned test.
-- Declared quality commands pass/fail in the runner and are inspected exactly.
-- Retired two-pack invocation cannot pass or mutate a project.
-- Full `bb test` is green, apart from any separately documented environmental
-  tmux restriction or named upstream flaky test.
-- R1 is architecturally generic with Claude Code formally certified and Codex
-  demonstrated in real audits; Codex formal scenario certification carries the
-  external WSL initialization caveat recorded in D8.
+- The non-toy multi-module fixture is built first and every gate is proven against
+  it; no six-pack test could pass against the sut.sh/42 toy.
+- A planted **unimplemented scenario** (approved `@ID`, no step handler) turns the
+  run **red** at the accept gate, attributed and naming the scenario ID; a
+  **dropped** approved scenario (absent from the report) turns it red too.
+- A planted **architecture violation** turns the run red at the harden gate;
+  out-of-scope commits and a verifier that mutates its worktree turn it red.
+- The happy path runs `specify → gate → code → harden → qa → runner gates →
+  inspect → SUCCESS`, every approved scenario ID `passed` in the authenticated
+  report, `inspect-run` PASS.
+- Injection-contract tests assert the **exact** `TEST_CMD:` / `ACCEPT_CMD:` /
+  `HANDOFF_PATH:` lines (not substrings); each fake declared tool asserts its exact
+  args.
+- The fork `six-pack` branch is registered in `PACKS` and satisfies
+  `MANAGED_FILES.manifest` (`pack-manifest-test` covers it, D20).
+- Full `bb test` is green, including the sealed-v0.1 suites (regression guard for
+  any shared-helper extraction), apart from the named upstream flaky test.
 
-## v0.1 verdict
+## After code-complete
 
-The release is a sound, externally audited harness with executable project
-gates and explicitly documented boundaries. No known fixtures-mirror-the-toy
-defect remains represented as an enforced control.
+m7 goes to a fresh **external** (Codex) adversarial audit against its own criteria
+— not self-review — exactly the separation that made v0.1 sound.
