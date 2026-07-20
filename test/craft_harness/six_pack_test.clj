@@ -261,6 +261,26 @@
         (is (re-find #"(?i)accept" (:all r)))
         (is (not (fs/exists? (state p))) "no session state on a fail-closed contract")))))
 
+;; --- authenticated executable-Gherkin evidence (D29) -------------------------
+
+(deftest tampered-acceptance-evidence-is-rejected
+  (testing "editing the retained acceptance report after a green run fails inspection (the m7 MAC covers it, D29)"
+    (let [p (make-sixpack-project!)
+          r2 (approve-and-resume! p "happy")]
+      (is (zero? (:exit r2)) (str "the run must be green first:\n" (:all r2)))
+      (let [rf (str (fs/path (state p) "accept-report.ndjson"))
+            tampered (str/replace (slurp rf)
+                                  "\"scenario\":\"SUT-2\",\"status\":\"passed\""
+                                  "\"scenario\":\"SUT-2\",\"status\":\"failed\"")]
+        (is (not= tampered (slurp rf)) "sanity: the tamper actually changed the report")
+        (spit rf tampered)
+        (let [r (sh/sh "bash" (str (fs/path repo-root "bin" "inspect-run")) (str (state p)) (str p)
+                       :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
+                             "GIT_CONFIG_NOSYSTEM" "1"
+                             "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root p)})]
+          (is (not (zero? (:exit r))) "tampered acceptance evidence must be rejected")
+          (is (re-find #"(?i)tamper|authentic|digest" (str (:out r) (:err r)))))))))
+
 (deftest run-six-usage-is-clear
   (let [r (sh/sh "bash" run-six :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")})]
     (is (not (zero? (:exit r))))

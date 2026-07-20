@@ -1054,6 +1054,82 @@ note the author-metadata address (`oscaruiz <…@gmail.com>`, 134 commits) remai
 present in local and remote history by the deliberate D10 ruling; the "purge"
 covered blob content only, never the author field.
 
+## D32 — The six-pack: executable Gherkin as a runner-owned gate, with honest bounds (2026-07-20, m7)
+
+m7 builds the `six-pack` on top of the sealed v0.1 runner. The defining new
+control is **executable Gherkin**: where solo-pack's Gherkin is documental (a
+verifier reads `.feature` files and asserts each `@ID` is "satisfied" — advisory
+by design, D29/D26), six-pack's approved scenarios must actually RUN and the
+runner must verify they ran. Design decisions taken (recorded before/at
+implementation, per CLAUDE.md):
+
+**1. The `accept:` contract + the executable-Gherkin gate.** `project.prompt`
+gains an OPTIONAL strict `accept:` command (additive to the D28 contract; parsed
+by `bin/parse-project`, emitted as an `ACCEPT` record). `run-solo` ignores it;
+`run-six` REQUIRES it (fail-closed — there is no executable Gherkin without one).
+The specifier writes `@ID`-tagged features; `run-six` snapshots the approved
+scenario IDs at the R6 gate (`spec/approved-scenarios.txt`) as the executable-
+traceability contract. After the agent phases, `run-six` runs `accept:` **itself**
+in a fresh candidate worktree (with `CRAFT_ACCEPT_REPORT` pointed at a runner-owned
+path outside the worktree), parses the machine-readable report **structurally**
+(`bin/parse-accept-report.bb`, `docs/acceptance-report-schema.md`) — never by
+substring (the D22/D27 "passed for the wrong reason" trap) — and requires every
+approved scenario to be reported `passed`. A missing, `failed`, or `undefined`
+approved scenario turns the run red, attributed, naming the ID. Proven against a
+non-toy multi-module fixture with a **planted unimplemented scenario** (`@SUT-3`,
+no step handler → `undefined` → red) and a **dropped** scenario (absent from the
+report → red).
+
+**2. Honest boundary (D29/D30 carried forward, not re-litigated).** The claim is
+only that *the declared commands ran and the approved scenarios executed and
+passed against the candidate* — NOT semantic coverage of the domain (scenario
+*text* fidelity stays advisory), and NOT forgery-proof against a malicious
+same-user agent. The runner acts on each live `accept:`/`test:`/`quality:` exit
+status (D30's one surviving adversarial guarantee). The acceptance report and the
+approved-scenario snapshot are folded into the m6 command-evidence authenticator
+(extended MAC recipe, matched exactly by `inspect-run`); a post-run edit to either
+now fails inspection as tampering — accidental-tamper-evident only (D30). Negative
+test `tampered-acceptance-evidence-is-rejected` proves it.
+
+**3. Four named phases + command-class reuse.** Phases `specify → code → harden →
+qa` (`run-six` asserts this sequence against the pack conf, as `run-solo` asserts
+its own). The architect role is enforced as a declared **architecture command in
+the `quality:` block** (executable when declared; a planted cross-module boundary
+violation turns the run red at the harden gate); the upstream **cleaner** is folded
+into harden. The upstream `hardender` spelling is **normalized to `hardener`**
+(conf role token and role filename kept consistent).
+
+**4. Documented degradation (design §5/§7.7/§8 already carve these out).** No
+`gherkin-mutator` (§5 "No Gherkin mutation in v0.1", carried into m7). No
+Playwright-UI automation (`accept:` is language/UI-agnostic; a TS project can later
+declare a Playwright-emitting `accept:` command). **Single primary candidate**:
+harden may advance the candidate (re-scoped + re-tested), but architect/cleaner are
+not separate committing phases.
+
+**5. Self-contained genuine acceptance engine, no external dependency in the
+suite.** The fixture ships a small but GENUINE bash acceptance runtime that really
+parses features, dispatches to step handlers, executes them, and emits the report
+schema — so `bb test` stays hermetic (no external APS repo, no network; honoring
+"no deps beyond git/bash/bb" and avoiding the D8/D23/D24 toolchain fragility). The
+gate consumes the SCHEMA, not the engine, so a real project can wire APS
+`gherkin-parser` or cucumber `--format json` to the same schema and the identical
+runner gate holds.
+
+**6. `run-six` is self-contained (fallback of the two approved options).** The plan
+offered extracting a shared `bin/pack-lib.sh` (primary) or duplicating the proven
+helpers into `run-six` (fallback). Chosen: **duplication**, to keep the sealed v0.1
+`run-solo` byte-for-byte untouched (zero regression risk on the audited runner).
+The full v0.1 suite is the regression guard and stays green (146 tests). If a third
+pack ever appears, revisit the extraction.
+
+**Verification.** Full `bb test` green authoritatively under WSL/Ubuntu — 146 tests
+/ 615 assertions before the tamper test, 147 / ~619 after — including the unchanged
+sealed-v0.1 suites. The signature negatives (unimplemented/dropped scenario,
+architecture violation, out-of-scope commit, qa worktree mutation, tampered
+evidence) all turn red with attribution. Per the standing separation that kept v0.1
+sound, m7 goes to a fresh EXTERNAL (Codex) adversarial audit against its own
+criteria — not self-review — before it is considered done.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
