@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Strict machine-readable project contract (D27 remediation).
 # Output records are tab-separated: OWN<TAB>glob, TEST<TAB>command,
-# QUALITY<TAB>name<TAB>command.
+# QUALITY<TAB>name<TAB>command, ACCEPT<TAB>command.
+#
+# `accept:` (m7): an OPTIONAL single acceptance command whose output is a
+# machine-readable per-scenario report (docs/acceptance-report-schema.md). It is
+# meaningful only to the six-pack runner (run-six), which requires it; run-solo
+# emits no ACCEPT record demand and ignores it, so this stays backward compatible.
 set -euo pipefail
 
 die() { echo "parse-project: $*" >&2; exit 1; }
@@ -10,6 +15,7 @@ file="${1:-}"
 [[ -f "$file" ]] || die "required project contract not found: $file"
 
 owns_seen=0; owns_count=0; quality_seen=0; quality_count=0; test_seen=0; test_cmd=""
+accept_seen=0; accept_cmd=""
 mode=""
 declare -a owns=() quality_names=() quality_cmds=()
 while IFS= read -r line || [[ -n "$line" ]]; do
@@ -52,6 +58,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     continue
   fi
   [[ ! "$line" =~ ^test: ]] || die "test: must contain one non-empty command after a space"
+  if [[ "$line" =~ ^accept:[[:space:]]+(.+)$ ]]; then
+    (( accept_seen == 0 )) || die "duplicate accept: declaration"
+    accept_seen=1; accept_cmd="${BASH_REMATCH[1]}"
+    accept_cmd="${accept_cmd%"${accept_cmd##*[![:space:]]}"}"
+    [[ -n "$accept_cmd" ]] || die "accept: command is empty"
+    [[ "$accept_cmd" != *$'\t'* ]] || die "accept command must not contain a tab"
+    continue
+  fi
+  [[ ! "$line" =~ ^accept: ]] || die "accept: must contain one non-empty command after a space"
 done < "$file"
 
 (( owns_seen == 1 && owns_count > 0 )) || die "required owns: block is missing or empty"
@@ -62,3 +77,4 @@ printf 'TEST\t%s\n' "$test_cmd"
 for ((i=0; i<${#quality_names[@]}; i++)); do
   printf 'QUALITY\t%s\t%s\n' "${quality_names[$i]}" "${quality_cmds[$i]}"
 done
+if (( accept_seen == 1 )); then printf 'ACCEPT\t%s\n' "$accept_cmd"; fi
