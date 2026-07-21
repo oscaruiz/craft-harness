@@ -1130,6 +1130,22 @@ evidence) all turn red with attribution. Per the standing separation that kept v
 sound, m7 goes to a fresh EXTERNAL (Codex) adversarial audit against its own
 criteria — not self-review — before it is considered done.
 
+## D33 — Acceptance reports fail closed on duplicate and malformed IDs (2026-07-20, m7 follow-up)
+
+The external m7 audit found one bounded fail-open gap: `parse-accept-report.bb`
+accepted duplicate scenario IDs, while `run-six` and `inspect-run` accumulated
+`passed` statuses existentially. A contradictory pair such as `SUT-1: failed`
+plus `SUT-1: passed` could therefore satisfy the approved-scenario gate.
+
+The shared structural parser now rejects every duplicate ID, regardless of record
+order or whether the statuses agree, and validates IDs against the documented
+`@?[A-Z][A-Z0-9]*-[0-9]+` grammar. Because both live enforcement (`run-six`) and
+retained-evidence inspection (`inspect-run`) fail on any parser error, both
+consumers now reject the same malformed report before building their passed maps.
+Negative tests cover contradictory duplicates in both orders, an end-to-end
+duplicate report that must turn a run red, and malformed IDs. This closes the
+audit's sole PARTIAL finding without changing any control it ruled CLOSED.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

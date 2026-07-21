@@ -19,6 +19,7 @@
 
 (def repo-root (fs/cwd))
 (def run-six (str (fs/path repo-root "bin" "run-six")))
+(def parse-accept-report (str (fs/path repo-root "bin" "parse-accept-report.bb")))
 (def fixtures (fs/path repo-root "test" "fixtures" "sixpack-agent"))
 (def template (fs/path repo-root "test" "fixtures" "sixpack" "template"))
 
@@ -119,6 +120,11 @@
     (approve! project (approval-token r1))
     (run-six! project variant)))
 
+(defn parse-report [records]
+  (let [report (fs/path (tmp-dir) "accept-report.ndjson")]
+    (spit (str report) (str (str/join "\n" records) "\n"))
+    (sh/sh "bb" parse-accept-report (str report))))
+
 ;; --- the specifier + R6 gate -------------------------------------------------
 
 (deftest specify-runs-then-pauses-for-approval
@@ -201,6 +207,39 @@
         (is (not (zero? (:exit r2))) "a dropped approved scenario MUST turn the run red")
         (is (re-find #"SUT-2" (:all r2)) "the failure must name the missing scenario ID")
         (is (not= "done" (status p)))))))
+
+(deftest duplicate-contradictory-acceptance-records-turn-the-run-red
+  (testing "failed then passed for one approved ID cannot satisfy the gate existentially"
+    (let [p (make-sixpack-project!)
+          r1 (run-six! p "duplicate-report")]
+      (approve! p (approval-token r1))
+      (let [r2 (run-six! p "duplicate-report")
+            report (slurp (str (fs/path (state p) "accept-report.ndjson")))]
+        (is (str/includes? report "{\"scenario\":\"SUT-1\",\"status\":\"failed\"}"))
+        (is (str/includes? report "{\"scenario\":\"SUT-1\",\"status\":\"passed\"}"))
+        (is (not (zero? (:exit r2))) "duplicate contradictory records MUST turn the run red")
+        (is (re-find #"(?i)duplicate.*SUT-1|SUT-1.*duplicate" (:all r2)))
+        (is (not= "done" (status p)))))))
+
+(deftest acceptance-report-parser-rejects-duplicate-ids-in-either-order
+  (doseq [records [["{\"scenario\":\"SUT-1\",\"status\":\"failed\"}"
+                    "{\"scenario\":\"SUT-1\",\"status\":\"passed\"}"]
+                   ["{\"scenario\":\"SUT-1\",\"status\":\"passed\"}"
+                    "{\"scenario\":\"SUT-1\",\"status\":\"failed\"}"]]]
+    (let [r (parse-report records)]
+      (is (not (zero? (:exit r))))
+      (is (re-find #"(?i)duplicate.*SUT-1|SUT-1.*duplicate" (:err r))))))
+
+(deftest acceptance-report-parser-rejects-malformed-scenario-ids
+  (doseq [id ["sut-1" "SUT" "SUT_1" "SUT-0x1" "1SUT-1" "SUT-1-extra"]]
+    (let [r (parse-report [(str "{\"scenario\":\"" id "\",\"status\":\"passed\"}")])]
+      (is (not (zero? (:exit r))) (str "must reject malformed scenario ID: " id))
+      (is (re-find #"(?i)scenario.*ID|ID.*scenario" (:err r))))))
+
+(deftest acceptance-report-parser-accepts-documented-id-grammar
+  (doseq [id ["SUT-1" "@SUT-1" "ACC12-34"]]
+    (let [r (parse-report [(str "{\"scenario\":\"" id "\",\"status\":\"passed\"}")])]
+      (is (zero? (:exit r)) (str "must accept documented scenario ID: " id)))))
 
 ;; --- harden / architecture gate ----------------------------------------------
 

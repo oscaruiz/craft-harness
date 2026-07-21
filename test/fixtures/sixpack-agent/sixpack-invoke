@@ -16,6 +16,7 @@
 #                     (executable-Gherkin negative: reported "undefined").
 #   dropped-scenario— code omits an approved scenario from the acceptance suite
 #                     (it never appears in the report at all).
+#   duplicate-report — emits failed+passed records for the same approved ID.
 #   arch-violation  — code makes web reach into core/lib.sh (architecture gate).
 #   outofscope      — code `git add -A`s an out-of-scope file (owned-scope gate).
 #   qa-mutates      — qa writes into its read-only candidate worktree.
@@ -69,6 +70,15 @@ Feature: web module
     When I open the web app
     Then the web app shows WEB[CORE-OK]
 FEAT
+  if [[ "$VARIANT" == duplicate-report ]]; then
+    cat > "$SIX_SPEC_DIR/features/aaa-duplicate.feature" <<'FEAT'
+Feature: contradictory duplicate result
+  @SUT-1
+  Scenario: duplicate core result fails first
+    Given the system is built
+    Then the duplicate outcome fails
+FEAT
+  fi
   if [[ "$VARIANT" == unimpl-scenario ]]; then
     cat > "$SIX_SPEC_DIR/features/extra.feature" <<'FEAT'
 Feature: extra behavior
@@ -100,6 +110,7 @@ run_step() {
     "Then core answers CORE-OK")            [[ "$(bash core/api.sh)" == "CORE-OK" ]] ;;
     "When I open the web app")              return 0 ;;
     "Then the web app shows WEB[CORE-OK]")  [[ "$(bash web/app.sh)" == "WEB[CORE-OK]" ]] ;;
+    "Then the duplicate outcome fails")     return 1 ;;
     *) return 2 ;;
   esac
 }

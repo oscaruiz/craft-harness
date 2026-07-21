@@ -25,6 +25,10 @@ scenario. Each object has exactly two required string fields:
   a step had no matching step handler (an unimplemented scenario); `failed` means a
   step ran and asserted false.
 
+Each scenario ID may occur only once in a report. Duplicate records are malformed
+and fail closed, including duplicates with contradictory statuses; neither
+`run-six` nor `inspect-run` may treat any one duplicate `passed` record as enough.
+
 ## Where it is written
 
 `run-six` sets `CRAFT_ACCEPT_REPORT` in the environment when it runs `accept:`,
