@@ -20,8 +20,10 @@
 (def repo-root (fs/cwd))
 (def run-six (str (fs/path repo-root "bin" "run-six")))
 (def parse-accept-report (str (fs/path repo-root "bin" "parse-accept-report.bb")))
+(def parse-mutation-report (str (fs/path repo-root "bin" "parse-mutation-report.bb")))
 (def fixtures (fs/path repo-root "test" "fixtures" "sixpack-agent"))
 (def template (fs/path repo-root "test" "fixtures" "sixpack" "template"))
+(def mut-overlay (fs/path repo-root "test" "fixtures" "sixpack-mut"))
 
 (def ^:dynamic *sandboxes* nil)
 (use-fixtures :each
@@ -62,6 +64,34 @@
     (git! dir "-c" "user.name=Setup" "-c" "user.email=setup@example.invalid"
           "commit" "-q" "-m" "sixpack baseline (scaffolding only)")
     dir))
+
+(defn make-sixpack-mut-project!
+  "The non-toy fixture WITH the opt-in mutation gate (D35): the base six-pack
+   template plus the mutation-enabled project.prompt (mutation: pitest, threshold
+   80) and the genuine miniature mutation tool (tools/mutation-run.sh, which really
+   mutates core/rules.sh + runs core/rules-test.sh and emits a PIT-shaped report).
+   Same identity-free baseline as the base fixture (D23)."
+  []
+  (let [dir (fs/path (tmp-dir) "sixproj-mut")]
+    (fs/create-dirs dir)
+    (fs/copy-tree template dir)
+    (fs/copy (fs/path mut-overlay "project.prompt") (fs/path dir "project.prompt")
+             {:replace-existing true})
+    (fs/create-dirs (fs/path dir "tools"))
+    (fs/copy (fs/path mut-overlay "tools" "mutation-run.sh") (fs/path dir "tools" "mutation-run.sh")
+             {:replace-existing true})
+    (git! dir "init" "-q" "-b" "main")
+    (git! dir "add" "-A")
+    (git! dir "-c" "user.name=Setup" "-c" "user.email=setup@example.invalid"
+          "commit" "-q" "-m" "sixpack+mutation baseline (scaffolding only)")
+    dir))
+
+(defn parse-mut
+  "Feed a mutations.xml body to bin/parse-mutation-report.bb (structural PIT parse)."
+  [xml]
+  (let [f (fs/path (tmp-dir) "mutations.xml")]
+    (spit (str f) xml)
+    (sh/sh "bb" parse-mutation-report (str f))))
 
 (defn drop-accept! [project]
   "Rewrite project.prompt WITHOUT the accept: line, and commit it."
@@ -326,6 +356,96 @@
                              "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root p)})]
           (is (not (zero? (:exit r))) "tampered acceptance evidence must be rejected")
           (is (re-find #"(?i)tamper|authentic|digest" (str (:out r) (:err r)))))))))
+
+;; --- m7 (D35): the opt-in mutation gate (PIT/Java) ---------------------------
+;; Opt-in per project: the mutation contract declares tool + threshold; the harness
+;; runs the declared command at the candidate, PARSES PIT's real score structurally,
+;; and fails the run if score < threshold. The fixture proves the gate genuinely
+;; BITES — a weak suite lets mutants survive (genuinely-computed low score -> RED),
+;; a strong suite kills them (real high score -> green). Not a hardcoded fake.
+
+(deftest mutation-report-parser-reads-the-real-score
+  (testing "killed = detected='true'; total excludes non-viable mutants (PIT semantics)"
+    (is (= "2\t2" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='true' status='TIMED_OUT'/></mutations>")))))
+    (is (= "1\t3" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='false' status='SURVIVED'/><mutation detected='false' status='NO_COVERAGE'/></mutations>")))))
+    (is (= "1\t2" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='false' status='SURVIVED'/><mutation detected='false' status='NON_VIABLE'/></mutations>")))))))
+
+(deftest mutation-report-parser-fails-closed
+  (doseq [xml ["<mutations></mutations>"                                    ; zero mutants
+               "<mutations><mutation status='KILLED'/></mutations>"         ; missing detected
+               "<report><mutation detected='true' status='KILLED'/></report>" ; wrong root
+               "<mutations><mutation "]]                                     ; malformed XML
+    (is (not (zero? (:exit (parse-mut xml)))) (str "must reject: " xml))))
+
+(deftest mutation-gate-passes-when-tests-kill-the-mutants
+  (let [p (make-sixpack-mut-project!)
+        r2 (approve-and-resume! p "mut-strong")]
+    (is (zero? (:exit r2)) (str "a strong suite must clear the mutation gate:\n" (:all r2)))
+    (is (= "done" (status p)))
+    (testing "the runner ran the mutation command itself; it is in the durable command record"
+      (is (fs/exists? (fs/path (state p) "mutation-report.xml")))
+      (is (re-find #"(?m)^mutation\t\d+\t0\tbash tools/mutation-run\.sh"
+                   (slurp (str (fs/path (state p) "commands.tsv"))))
+          "commands.tsv carries a successful (rc=0) mutation row"))
+    (testing "every mutant was genuinely killed (a real 100% score, structurally read)"
+      (let [rep (slurp (str (fs/path (state p) "mutation-report.xml")))]
+        (is (re-find #"status='KILLED'" rep))
+        (is (not (re-find #"status='SURVIVED'" rep)) "no survivors under a thorough suite")))
+    (testing "run-six reports the mutation score and the inspector passed"
+      (is (re-find #"(?i)mutation gate" (:all r2)))
+      (is (re-find #"RESULT: PASS" (:all r2))))))
+
+(deftest weak-tests-fail-the-mutation-gate-red
+  (testing "a weak suite lets mutants survive -> a genuinely-computed low score below threshold turns the run red, attributed"
+    (let [p (make-sixpack-mut-project!)
+          r1 (run-six! p "mut-weak")]
+      (approve! p (approval-token r1))
+      (let [r2 (run-six! p "mut-weak")]
+        (is (not (zero? (:exit r2))) "surviving mutants MUST turn the run red")
+        (is (re-find #"(?i)mutation" (:all r2)) "attributed to the mutation gate")
+        (is (re-find #"(?i)below the project-declared threshold|below.*threshold" (:all r2)))
+        (is (re-find #"80%" (:all r2)) "names the project-declared threshold")
+        (is (not= "done" (status p)))
+        (testing "the RED came from a REAL surviving-mutant score, not a hardcoded fake"
+          (let [rep (slurp (str (fs/path (state p) "mutation-report.xml")))]
+            (is (re-find #"status='SURVIVED'" rep)
+                "the retained report shows genuinely surviving mutants (the low score is computed)")))))))
+
+(deftest six-pack-without-a-mutation-gate-is-unaffected
+  (testing "opt-in proportionality: a six-pack that declares no mutation runs exactly as before"
+    (let [p (make-sixpack-project!)
+          r2 (approve-and-resume! p "happy")]
+      (is (zero? (:exit r2)) (:all r2))
+      (is (= "done" (status p)))
+      (is (not (fs/exists? (fs/path (state p) "mutation-report.xml")))
+          "no mutation report is produced without a declared mutation gate")
+      (is (not (re-find #"(?m)^mutation\t" (slurp (str (fs/path (state p) "commands.tsv")))))
+          "no mutation command row")
+      (is (re-find #"RESULT: PASS" (:all r2))))))
+
+(deftest tampered-mutation-evidence-is-rejected
+  (testing "editing the retained mutation report after a green run fails inspection (the m7 MAC covers it, D35/D29)"
+    (let [p (make-sixpack-mut-project!)
+          r2 (approve-and-resume! p "mut-strong")]
+      (is (zero? (:exit r2)) (str "the run must be green first:\n" (:all r2)))
+      (let [rf (str (fs/path (state p) "mutation-report.xml"))
+            tampered (str/replace-first (slurp rf) "status='KILLED'" "status='SURVIVED'")]
+        (is (not= tampered (slurp rf)) "sanity: the tamper actually changed the report")
+        (spit rf tampered)
+        (let [r (sh/sh "bash" (str (fs/path repo-root "bin" "inspect-run")) (str (state p)) (str p)
+                       :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")
+                             "GIT_CONFIG_NOSYSTEM" "1"
+                             "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root p)})]
+          (is (not (zero? (:exit r))) "tampered mutation evidence must be rejected")
+          (is (re-find #"(?i)tamper|authentic|digest" (str (:out r) (:err r)))))))))
+
+(deftest mutation-tool-and-qa-prompt-are-unpolluted-by-the-mutation-gate
+  (testing "the mutation gate is a RUNNER-owned command; it does not leak a toy default into agent prompts"
+    (let [p (make-sixpack-mut-project!)]
+      (run-six! p "mut-strong")   ; seeds prompts, pauses at the gate
+      (let [prompt (seeded-prompt p "code")]
+        (is (= "TEST_CMD: bash run-unit.sh" (prompt-line prompt "TEST_CMD:")))
+        (is (not (re-find #"(?i)\./test\.sh|\bsut\.sh\b" prompt)))))))
 
 (deftest run-six-usage-is-clear
   (let [r (sh/sh "bash" run-six :env {"PATH" (System/getenv "PATH") "HOME" (System/getenv "HOME")})]

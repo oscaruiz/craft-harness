@@ -81,14 +81,17 @@ check_commands() {
   [[ -f "$COMMAND_EVIDENCE_KEY" ]] \
     || { fail commands "runner-private command evidence key is unavailable"; return; }
   # The six-pack authenticator additionally covers the executable-Gherkin evidence
-  # (the acceptance report + the approved-scenario snapshot), matching run-six's
-  # recipe exactly; solo-pack's recipe is unchanged.
+  # (the acceptance report + the approved-scenario snapshot) AND the mutation report
+  # (D35), matching run-six's recipe exactly; solo-pack's recipe is unchanged. The
+  # mutation report is absent unless mutation is declared, so its empty `cat` keeps
+  # the recipe byte-identical for six-pack runs without a mutation gate.
   local actual_mac
   if [[ "$PACK" == "six-pack" ]]; then
     actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
       cat "$COMMANDS"; \
       cat "$SESSION/accept-report.ndjson" 2>/dev/null || true; \
       cat "$SESSION/spec/approved-scenarios.txt" 2>/dev/null || true; \
+      cat "$SESSION/mutation-report.xml" 2>/dev/null || true; \
       cat "$COMMAND_EVIDENCE_KEY"; } | sha256sum | awk '{print $1}')"
   else
     actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
@@ -96,14 +99,15 @@ check_commands() {
   fi
   [[ "$actual_mac" == "$RECORDED_COMMAND_MAC" ]] \
     || { fail commands "command evidence authentication failed (record was tampered with)"; return; }
-  local contract expected=() actual=() kind a b label duration rc command i
+  local contract expected=() actual=() kind a b c label duration rc command i
   contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
     || { fail commands "invalid project contract: $contract"; return; }
-  while IFS=$'\t' read -r kind a b; do
+  while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       TEST) expected+=("test" "$a");;
       QUALITY) expected+=("quality:$a" "$b");;
       ACCEPT) expected+=("accept" "$a");;
+      MUTATION) [[ "$PACK" == "six-pack" ]] && expected+=("mutation" "$c");;
     esac
   done <<< "$contract"
   while IFS=$'\t' read -r label duration rc command; do
@@ -142,11 +146,35 @@ check_scenarios() {
   pass scenarios
 }
 
+# Mutation-gate re-verification (six-pack only, D35): when the contract declares a
+# mutation gate, independently re-derive the real score from the authenticated
+# retained report and re-check it against the PROJECT-declared threshold — runner-
+# owned, structural, not agent-claimed. Absent declaration -> no mutation gate, no
+# check added (opt-in; a six-pack without mutation is unaffected).
+check_mutation() {
+  local contract line tool threshold command killed total
+  contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
+    || { fail mutation "invalid project contract: $contract"; return; }
+  line="$(printf '%s\n' "$contract" | awk -F '\t' '$1=="MUTATION"{print; exit}')"
+  [[ -n "$line" ]] || return 0    # mutation not declared -> nothing to check
+  IFS=$'\t' read -r _ tool threshold command <<< "$line"
+  local report="$SESSION/mutation-report.xml"
+  [[ -f "$report" ]] || { fail mutation "missing mutation report"; return; }
+  local parsed
+  parsed="$(bb "$FORK_ROOT/bin/parse-mutation-report.bb" "$report" 2>&1)" \
+    || { fail mutation "mutation report unparseable: $parsed"; return; }
+  IFS=$'\t' read -r killed total <<< "$parsed"
+  (( killed * 100 >= 10#$threshold * total )) \
+    || { fail mutation "mutation score below declared threshold ${threshold}% (${killed}/${total} killed)"; return; }
+  pass mutation
+}
+
 check_manifest
 check_scope
 check_handoffs
 check_commands
 [[ "$PACK" == "six-pack" ]] && check_scenarios
+[[ "$PACK" == "six-pack" ]] && check_mutation
 
 echo "inspect-run — $PACK session $SESSION against project $PROJECT"
 for result in "${RESULTS[@]}"; do

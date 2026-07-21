@@ -20,6 +20,10 @@
 #   arch-violation  — code makes web reach into core/lib.sh (architecture gate).
 #   outofscope      — code `git add -A`s an out-of-scope file (owned-scope gate).
 #   qa-mutates      — qa writes into its read-only candidate worktree.
+#   mut-strong      — code adds core/rules.sh + a THOROUGH core/rules-test.sh that
+#                     kills every mutant (mutation gate green, D35).
+#   mut-weak        — code adds core/rules.sh + a WEAK core/rules-test.sh that lets
+#                     mutants survive (mutation score below threshold -> gate RED).
 #   stuck           — hangs (per-phase timeout breaker).
 set -uo pipefail
 
@@ -125,6 +129,46 @@ STEPS
   done
 }
 
+# The mutation-gate variants add a small pure-logic module (core/rules.sh) plus its
+# unit test (core/rules-test.sh). The tool tools/mutation-run.sh mutates rules.sh and
+# runs rules-test.sh against each mutant, so the mutation SCORE is genuinely a
+# function of this test's strength — a thorough suite kills the mutants (green), a
+# weak one lets them survive (RED). Both live under owns: core/**.
+write_mutation_target() { # <mut-strong|mut-weak>
+  mkdir -p core
+  cat > core/rules.sh <<'RULES'
+#!/usr/bin/env bash
+# Pure branching logic under mutation (D35).
+grade() {
+  local n="$1"
+  if   (( n >= 90 )); then echo A
+  elif (( n >= 80 )); then echo B
+  elif (( n >= 70 )); then echo C
+  else                     echo F
+  fi
+}
+RULES
+  if [[ "$1" == mut-strong ]]; then
+    cat > core/rules-test.sh <<'STRONG'
+#!/usr/bin/env bash
+# Thorough suite: pins every branch boundary and every return arm -> kills every mutant.
+source "${RULES_SRC:-core/rules.sh}"
+fail=0
+ck() { local g; g="$(grade "$1")"; [[ "$g" == "$2" ]] || { echo "grade($1)=$g want $2"; fail=1; }; }
+ck 95 A; ck 90 A; ck 85 B; ck 80 B; ck 75 C; ck 70 C; ck 50 F
+exit $fail
+STRONG
+  else
+    cat > core/rules-test.sh <<'WEAK'
+#!/usr/bin/env bash
+# Weak suite: asserts one easy case -> most mutants survive (score below threshold).
+source "${RULES_SRC:-core/rules.sh}"
+g="$(grade 50)"; [[ "$g" == F ]] || { echo "grade(50)=$g want F"; exit 1; }
+exit 0
+WEAK
+  fi
+}
+
 case "$PHASE" in
   specify)
     printf '# Spec: core + web modules with executable acceptance scenarios.\n' > "$SIX_SPEC_DIR/spec.md"
@@ -135,6 +179,7 @@ case "$PHASE" in
     tc="$(prompt_line TEST_CMD)"
     [[ -n "$tc" ]] || { echo "fake sixpack-agent: code phase got no TEST_CMD" >&2; exit 3; }
     write_impl
+    [[ "$VARIANT" == mut-strong || "$VARIANT" == mut-weak ]] && write_mutation_target "$VARIANT"
     # Genuine self-check: the coder runs the project's declared test command before
     # handing off (makes TEST_CMD load-bearing — a stub that ignored it could not).
     bash -c "$tc" >/dev/null 2>&1 || { echo "fake sixpack-agent: TEST_CMD failed after impl" >&2; exit 4; }

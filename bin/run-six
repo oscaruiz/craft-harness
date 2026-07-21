@@ -79,17 +79,26 @@ CONTRACT_OUT="$(bash "$CONTRACT_PARSER" "$PROJECT/project.prompt" 2>&1)" \
   || die "invalid project contract — $CONTRACT_OUT"
 declare -a PROJECT_OWNS=() QUALITY_NAMES=() QUALITY_COMMANDS=()
 PROJECT_TEST_CMD=""; PROJECT_ACCEPT_CMD=""
-while IFS=$'\t' read -r kind a b; do
+MUT_DECLARED=0; MUT_TOOL=""; MUT_THRESHOLD=""; MUT_COMMAND=""
+while IFS=$'\t' read -r kind a b c; do
   case "$kind" in
     OWN) PROJECT_OWNS+=("$a") ;;
     TEST) PROJECT_TEST_CMD="$a" ;;
     QUALITY) QUALITY_NAMES+=("$a"); QUALITY_COMMANDS+=("$b") ;;
     ACCEPT) PROJECT_ACCEPT_CMD="$a" ;;
+    MUTATION) MUT_DECLARED=1; MUT_TOOL="$a"; MUT_THRESHOLD="$b"; MUT_COMMAND="$c" ;;
   esac
 done <<< "$CONTRACT_OUT"
 (( ${#PROJECT_OWNS[@]} > 0 )) || die "invalid project contract — no owned paths"
 [[ -n "$PROJECT_TEST_CMD" ]] || die "invalid project contract — no test command"
 [[ -n "$PROJECT_ACCEPT_CMD" ]] || die "invalid project contract — the six-pack requires an accept: command (executable Gherkin)"
+# Mutation is OPT-IN (D35): declared -> a hard gate; absent -> six-pack behaves as
+# before. The PROJECT owns the threshold; the harness owns execution + verdict. Only
+# PIT/Java is supported for now (Stryker/TS is a documented later extension).
+if (( MUT_DECLARED )); then
+  [[ "$MUT_TOOL" == "pitest" ]] \
+    || die "invalid project contract — mutation tool '$MUT_TOOL' is not supported (only 'pitest' for now)"
+fi
 
 git -C "$PROJECT" diff --quiet && git -C "$PROJECT" diff --cached --quiet \
   || die "tracked working tree is dirty — commit or stash tracked changes before running"
@@ -136,12 +145,14 @@ MANIFEST="$STATE/manifest.json"
 PHASES_TSV="$STATE/phases.tsv"
 COMMANDS_TSV="$STATE/commands.tsv"
 ACCEPT_REPORT="$STATE/accept-report.ndjson"
+MUTATION_REPORT="$STATE/mutation-report.xml"
 APPROVED_SCENARIOS="$SPEC/approved-scenarios.txt"
 STATUS="$STATE/status"
 FAILURE="$STATE/failure"
 VALIDATE="$FORK_ROOT/bin/handoff-validate.bb"
 MANIFEST_BB="$FORK_ROOT/adapters/scenario_manifest.bb"
 ACCEPT_PARSER="$FORK_ROOT/bin/parse-accept-report.bb"
+MUTATION_PARSER="$FORK_ROOT/bin/parse-mutation-report.bb"
 
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 set_status() { printf '%s\n' "$1" > "$STATUS"; }
@@ -168,16 +179,19 @@ trap cleanup_worktree EXIT
 ADAPTER_INFO="$("$ADAPTER_DIR/info" 2>/dev/null || echo "$ADAPTER unknown")"
 
 # The authenticator covers the runner-owned command record AND the executable-
-# Gherkin evidence (the acceptance report + the approved-scenario snapshot), so a
-# structurally plausible post-run edit to any of them fails inspection (D29).
-# Accidental-tamper-evident only, NOT forgery-proof against a malicious same-user
-# agent (D30). inspect-run recomputes with the identical recipe.
+# Gherkin evidence (the acceptance report + the approved-scenario snapshot) AND the
+# mutation report (D35), so a structurally plausible post-run edit to any of them
+# fails inspection (D29). Accidental-tamper-evident only, NOT forgery-proof against a
+# malicious same-user agent (D30). inspect-run recomputes with the identical recipe.
+# The mutation report is absent when mutation is not declared, so its empty `cat`
+# leaves the recipe byte-identical for non-mutation runs (backward compatible).
 command_evidence_mac() {
   local candidate; candidate="$(cat "$STATE/candidate_commit" 2>/dev/null || true)"
   { cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$candidate"; \
     cat "$COMMANDS_TSV" 2>/dev/null || true; \
     cat "$ACCEPT_REPORT" 2>/dev/null || true; \
     cat "$APPROVED_SCENARIOS" 2>/dev/null || true; \
+    cat "$MUTATION_REPORT" 2>/dev/null || true; \
     cat "$COMMAND_EVIDENCE_KEY"; } | sha256sum | awk '{print $1}'
 }
 
@@ -398,6 +412,45 @@ enforce_approved_scenarios() {
   fi
 }
 
+# The mutation gate (D35, opt-in): run the declared mutation command ourselves at
+# the candidate, with CRAFT_MUTATION_REPORT pointed at a runner-owned path OUTSIDE
+# the worktree (so producing the report is not a worktree mutation and it survives
+# teardown + is folded into the authenticator). The command is a REPORTER: it
+# produces a PIT-shaped mutations.xml and exits 0 even for a poor score (PIT itself
+# does). The verdict is ours, from the parsed score — never the exit code.
+run_mutation_command() { # <workdir>
+  local wd="$1" rc=0 start duration
+  : > "$MUTATION_REPORT"
+  start="$(date +%s)"
+  set_status "running_mutation"
+  CRAFT_MUTATION_REPORT="$MUTATION_REPORT" \
+    bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
+    bash -c 'cd "$1" && CRAFT_MUTATION_REPORT="$3" exec bash -c "$2"' _ "$wd" "$MUT_COMMAND" "$MUTATION_REPORT" \
+    > "$LOGS/command-mutation.log" 2>&1 || rc=$?
+  duration=$(( $(date +%s) - start ))
+  printf '%s\t%s\t%s\t%s\n' "mutation" "$duration" "$rc" "$MUT_COMMAND" >> "$COMMANDS_TSV"
+  if (( rc != 0 )); then
+    if (( rc == 124 )); then fail_phase mutation "declared mutation command timed out after ${COMMAND_TIMEOUT}s"; fi
+    fail_phase mutation "declared mutation command failed (rc=$rc): $MUT_COMMAND"
+  fi
+}
+
+# Parse the real mutation score STRUCTURALLY (never by substring) and fail the run,
+# attributed, if it is below the PROJECT-declared threshold. Exact integer
+# arithmetic (killed*100 >= threshold*total) — no float rounding can nudge a run
+# over its threshold.
+enforce_mutation_threshold() {
+  local parsed killed total
+  parsed="$(bb "$MUTATION_PARSER" "$MUTATION_REPORT" 2>"$STATE/.merr")" \
+    || fail_phase mutation "mutation report is unparseable — $(tr -d '\n' < "$STATE/.merr")"
+  IFS=$'\t' read -r killed total <<< "$parsed"
+  local score=$(( 100 * killed / total ))
+  if (( killed * 100 < 10#$MUT_THRESHOLD * total )); then
+    fail_phase mutation "mutation score ${score}% (${killed}/${total} mutants killed) is below the project-declared threshold ${MUT_THRESHOLD}% (tool: $MUT_TOOL)"
+  fi
+  echo "run-six: mutation gate — ${score}% (${killed}/${total} killed) >= ${MUT_THRESHOLD}% threshold (tool: $MUT_TOOL): PASS"
+}
+
 # --- specify + gate (fresh start) -------------------------------------------
 start_fresh() {
   initialize_command_evidence_key
@@ -530,6 +583,13 @@ run_rest() {
   done
   run_accept_command "$VWD"
   enforce_approved_scenarios
+  # The mutation gate is opt-in (D35): declared -> executed as a hard gate here, at
+  # the same clean candidate worktree; absent -> skipped entirely (six-pack behaves
+  # exactly as before, no mutation-report evidence produced).
+  if (( MUT_DECLARED )); then
+    run_mutation_command "$VWD"
+    enforce_mutation_threshold
+  fi
   git -C "$PROJECT" worktree remove --force "$VWD" 2>/dev/null || true
   VWD=""
 
