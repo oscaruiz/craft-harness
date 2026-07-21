@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+#
+# Fake six-pack agent for the run-six suite (m7). One headless turn per phase
+# (adapters/CONTRACT.md Mode 1): dispatch on the prompt's "PHASE: <name>" first
+# line, do the phase's work in --workdir, and write a schema-valid structured
+# handoff to the injected HANDOFF_PATH: line (the confined-agent model, D21 — it
+# does NOT rely on $SIX_HANDOFF expansion). $1 selects the variant.
+#
+# Phases: specify (writes spec + executable @ID features) · code (impl + step
+# handlers + copies approved features, commits the candidate) · harden (quality
+# pass, no-op here) · qa (independent verifier at the candidate).
+#
+# Variants:
+#   happy           — every phase correct; all approved scenarios pass.
+#   unimpl-scenario — specify adds an approved scenario with no step handler
+#                     (executable-Gherkin negative: reported "undefined").
+#   dropped-scenario— code omits an approved scenario from the acceptance suite
+#                     (it never appears in the report at all).
+#   duplicate-report — emits failed+passed records for the same approved ID.
+#   arch-violation  — code makes web reach into core/lib.sh (architecture gate).
+#   outofscope      — code `git add -A`s an out-of-scope file (owned-scope gate).
+#   qa-mutates      — qa writes into its read-only candidate worktree.
+#   stuck           — hangs (per-phase timeout breaker).
+set -uo pipefail
+
+VARIANT="$1"; shift
+WORKDIR=""; PROMPT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR="${2:-}"; shift 2 ;;
+    --prompt-file) PROMPT="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -d "$WORKDIR" && -f "$PROMPT" ]] || { echo "fake sixpack-agent: bad args" >&2; exit 2; }
+PHASE="$(head -1 "$PROMPT" | sed 's/^PHASE: //')"
+cd "$WORKDIR"
+
+if [[ "$VARIANT" == stuck ]]; then sleep 300 & wait; exit 0; fi
+
+prompt_line() { sed -n "s/^$1: //p" "$PROMPT" | head -1; }
+DEST="$(prompt_line HANDOFF_PATH)"
+[[ -n "$DEST" ]] || { echo "fake sixpack-agent: no HANDOFF_PATH injected" >&2; exit 3; }
+
+emit_handoff() { # <from> <decisions-bullets>
+  {
+    echo "# done";        echo "- $1 phase completed its work"
+    echo "# decisions";   printf '%s\n' "$2"
+    echo "# assumptions"; echo "- bash and git are available"
+    echo "# open items";  echo "- none"
+    echo "# commands executed"; echo "- (fake) $1 phase"
+  } > "$DEST"
+}
+
+write_features() { # writes the approved feature set into $SIX_SPEC_DIR/features
+  mkdir -p "$SIX_SPEC_DIR/features"
+  cat > "$SIX_SPEC_DIR/features/core.feature" <<'FEAT'
+Feature: core module
+  @SUT-1
+  Scenario: core answers
+    Given the system is built
+    When I query the core module
+    Then core answers CORE-OK
+FEAT
+  cat > "$SIX_SPEC_DIR/features/web.feature" <<'FEAT'
+Feature: web module
+  @SUT-2
+  Scenario: web composes core
+    Given the system is built
+    When I open the web app
+    Then the web app shows WEB[CORE-OK]
+FEAT
+  if [[ "$VARIANT" == duplicate-report ]]; then
+    cat > "$SIX_SPEC_DIR/features/aaa-duplicate.feature" <<'FEAT'
+Feature: contradictory duplicate result
+  @SUT-1
+  Scenario: duplicate core result fails first
+    Given the system is built
+    Then the duplicate outcome fails
+FEAT
+  fi
+  if [[ "$VARIANT" == unimpl-scenario ]]; then
+    cat > "$SIX_SPEC_DIR/features/extra.feature" <<'FEAT'
+Feature: extra behavior
+  @SUT-3
+  Scenario: an unimplemented behavior
+    Given the system is built
+    Then the impossible thing happens
+FEAT
+  fi
+}
+
+write_impl() {
+  mkdir -p core web acceptance
+  printf '#!/usr/bin/env bash\necho CORE-OK\n' > core/lib.sh
+  printf '#!/usr/bin/env bash\nexec bash "$(dirname "$0")/lib.sh"\n' > core/api.sh
+  if [[ "$VARIANT" == arch-violation ]]; then
+    # Same observable output, but reaches into the PRIVATE impl — the boundary
+    # violation the architecture gate must catch.
+    printf '#!/usr/bin/env bash\ncore="$(bash "$(dirname "$0")/../core/lib.sh")"\necho "WEB[$core]"\n' > web/app.sh
+  else
+    printf '#!/usr/bin/env bash\ncore="$(bash "$(dirname "$0")/../core/api.sh")"\necho "WEB[$core]"\n' > web/app.sh
+  fi
+  cat > acceptance/steps.sh <<'STEPS'
+# Step handlers for the acceptance runtime. run_step <text>: 0 pass, 1 fail, 2 undefined.
+run_step() {
+  case "$1" in
+    "Given the system is built")            return 0 ;;
+    "When I query the core module")         return 0 ;;
+    "Then core answers CORE-OK")            [[ "$(bash core/api.sh)" == "CORE-OK" ]] ;;
+    "When I open the web app")              return 0 ;;
+    "Then the web app shows WEB[CORE-OK]")  [[ "$(bash web/app.sh)" == "WEB[CORE-OK]" ]] ;;
+    "Then the duplicate outcome fails")     return 1 ;;
+    *) return 2 ;;
+  esac
+}
+STEPS
+  # Copy the approved features into the candidate (owned features/). dropped-scenario
+  # deliberately omits web.feature (@SUT-2) so an approved scenario is never executed.
+  mkdir -p features
+  local feat
+  for feat in "$SIX_SPEC_DIR"/features/*.feature; do
+    [[ "$VARIANT" == dropped-scenario && "$(basename "$feat")" == web.feature ]] && continue
+    cp "$feat" features/
+  done
+}
+
+case "$PHASE" in
+  specify)
+    printf '# Spec: core + web modules with executable acceptance scenarios.\n' > "$SIX_SPEC_DIR/spec.md"
+    write_features
+    emit_handoff specify "- specified @SUT scenarios for core and web behavior"
+    ;;
+  code)
+    tc="$(prompt_line TEST_CMD)"
+    [[ -n "$tc" ]] || { echo "fake sixpack-agent: code phase got no TEST_CMD" >&2; exit 3; }
+    write_impl
+    # Genuine self-check: the coder runs the project's declared test command before
+    # handing off (makes TEST_CMD load-bearing — a stub that ignored it could not).
+    bash -c "$tc" >/dev/null 2>&1 || { echo "fake sixpack-agent: TEST_CMD failed after impl" >&2; exit 4; }
+    if [[ "$VARIANT" == outofscope ]]; then
+      printf 'scratch\n' > tools/extra.sh   # outside owns: -> owned-scope gate
+      git add -A
+    else
+      git add core web features acceptance/steps.sh
+    fi
+    git commit -q -m "code: implement core+web and approved scenarios"
+    emit_handoff code "- implemented core/api over core/lib, web via the public API, and step handlers"
+    ;;
+  harden)
+    # Behavior-preserving pass. Here a no-op that leaves the candidate unchanged;
+    # the runner enforces the quality (architecture + dup) gates at the candidate.
+    emit_handoff harden "- reviewed quality gates; no behavior-preserving change required"
+    ;;
+  qa)
+    # Independent verifier in a clean worktree at the candidate. Names the scenario
+    # IDs it sees (advisory); the runner independently runs the acceptance suite.
+    ids="$(grep -rhoE '@[A-Z][A-Z0-9]*-[0-9]+' features/ 2>/dev/null | sort -u | tr '\n' ' ')"
+    if [[ "$VARIANT" == qa-mutates ]]; then
+      printf 'tampered\n' > qa-scratch.txt   # mutating the read-only candidate worktree
+    fi
+    emit_handoff qa "- independently reviewed the candidate; scenarios present: ${ids:-none}"
+    ;;
+  *)
+    echo "fake sixpack-agent: unknown phase '$PHASE'" >&2; exit 1 ;;
+esac

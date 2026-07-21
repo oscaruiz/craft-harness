@@ -16,13 +16,21 @@ PACK="${MF[0]:-}"; BRANCH="${MF[1]:-}"; BASELINE="${MF[2]:-}"
 CANDIDATE="${MF[3]:-}"; OUTCOME="${MF[4]:-}"; RECORDED_COMMAND_MAC="${MF[5]:-}"
 PRIVATE_STATE_ROOT="${CRAFT_HARNESS_PRIVATE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/craft-harness}"
 PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
-COMMAND_EVIDENCE_KEY="$PRIVATE_STATE_ROOT/solo/$PROJECT_STATE_ID/commands.key"
+# The runner-private key and the expected phase set are pack-specific. solo-pack
+# is unchanged; six-pack (m7) adds harden/qa and the executable-Gherkin evidence.
+declare -a PHASES=()
+case "$PACK" in
+  solo-pack) PACK_SUBDIR=solo; PHASES=(specify code verify) ;;
+  six-pack)  PACK_SUBDIR=six;  PHASES=(specify code harden qa) ;;
+  *)         PACK_SUBDIR=solo ;;   # check_manifest rejects an unsupported pack
+esac
+COMMAND_EVIDENCE_KEY="$PRIVATE_STATE_ROOT/$PACK_SUBDIR/$PROJECT_STATE_ID/commands.key"
 declare -a RESULTS=(); FAILED=0
 pass() { RESULTS+=("PASS $1"); }
 fail() { RESULTS+=("FAIL $1: $2"); FAILED=1; }
 
 check_manifest() {
-  [[ "$PACK" == "solo-pack" ]] || { fail manifest "unsupported pack '$PACK'"; return; }
+  [[ "$PACK" == "solo-pack" || "$PACK" == "six-pack" ]] || { fail manifest "unsupported pack '$PACK'"; return; }
   [[ "$OUTCOME" == "success" ]] || { fail manifest "outcome is '$OUTCOME', not success"; return; }
   [[ "$BASELINE" =~ ^[0-9a-f]{40}$ && "$CANDIDATE" =~ ^[0-9a-f]{40}$ ]] \
     || { fail manifest "baseline/candidate commit is missing or malformed"; return; }
@@ -54,9 +62,11 @@ check_scope() {
 
 check_handoffs() {
   local phase h changed
-  for phase in specify code verify; do
+  for phase in "${PHASES[@]}"; do
     h="$SESSION/handoffs/$phase.handoff"; [[ -f "$h" ]] \
       || { fail handoffs "missing $phase handoff"; return; }
+    # code always commits; harden/qa self-declare via their commit: header, which
+    # handoff-validate detects, so we don't force --changed on them.
     changed=(); [[ "$phase" == code ]] && changed=(--changed)
     bb "$FORK_ROOT/bin/handoff-validate.bb" "$h" "${changed[@]}" >/dev/null 2>&1 \
       || { fail handoffs "invalid $phase handoff"; return; }
@@ -70,17 +80,31 @@ check_commands() {
     || { fail commands "missing or malformed command evidence authenticator"; return; }
   [[ -f "$COMMAND_EVIDENCE_KEY" ]] \
     || { fail commands "runner-private command evidence key is unavailable"; return; }
+  # The six-pack authenticator additionally covers the executable-Gherkin evidence
+  # (the acceptance report + the approved-scenario snapshot), matching run-six's
+  # recipe exactly; solo-pack's recipe is unchanged.
   local actual_mac
-  actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
-    cat "$COMMANDS"; cat "$COMMAND_EVIDENCE_KEY"; } \
-    | sha256sum | awk '{print $1}')"
+  if [[ "$PACK" == "six-pack" ]]; then
+    actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
+      cat "$COMMANDS"; \
+      cat "$SESSION/accept-report.ndjson" 2>/dev/null || true; \
+      cat "$SESSION/spec/approved-scenarios.txt" 2>/dev/null || true; \
+      cat "$COMMAND_EVIDENCE_KEY"; } | sha256sum | awk '{print $1}')"
+  else
+    actual_mac="$({ cat "$COMMAND_EVIDENCE_KEY"; printf '%s\n%s\n' "$PROJECT" "$CANDIDATE"; \
+      cat "$COMMANDS"; cat "$COMMAND_EVIDENCE_KEY"; } | sha256sum | awk '{print $1}')"
+  fi
   [[ "$actual_mac" == "$RECORDED_COMMAND_MAC" ]] \
     || { fail commands "command evidence authentication failed (record was tampered with)"; return; }
   local contract expected=() actual=() kind a b label duration rc command i
   contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
     || { fail commands "invalid project contract: $contract"; return; }
   while IFS=$'\t' read -r kind a b; do
-    case "$kind" in TEST) expected+=("test" "$a");; QUALITY) expected+=("quality:$a" "$b");; esac
+    case "$kind" in
+      TEST) expected+=("test" "$a");;
+      QUALITY) expected+=("quality:$a" "$b");;
+      ACCEPT) expected+=("accept" "$a");;
+    esac
   done <<< "$contract"
   while IFS=$'\t' read -r label duration rc command; do
     [[ -n "$label" ]] || continue
@@ -97,12 +121,34 @@ check_commands() {
   pass commands
 }
 
+# Executable-Gherkin re-verification (six-pack only, m7): independently re-check
+# that every approved snapshot scenario is reported PASSED — structurally, via the
+# report parser, never by substring. run-six already enforced this live and
+# fail-closed; this is the D2 defense-in-depth re-check over the authenticated
+# retained evidence.
+check_scenarios() {
+  local report="$SESSION/accept-report.ndjson" snap="$SESSION/spec/approved-scenarios.txt"
+  [[ -f "$report" ]] || { fail scenarios "missing acceptance report"; return; }
+  [[ -s "$snap" ]] || { fail scenarios "missing or empty approved-scenario snapshot"; return; }
+  local parsed id st
+  parsed="$(bb "$FORK_ROOT/bin/parse-accept-report.bb" "$report" 2>&1)" \
+    || { fail scenarios "acceptance report unparseable: $parsed"; return; }
+  declare -A passed=()
+  while IFS=$'\t' read -r id st; do [[ -n "$id" && "$st" == passed ]] && passed["$id"]=1; done <<< "$parsed"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ -n "${passed[$id]:-}" ]] || { fail scenarios "approved scenario not passed in the report: $id"; return; }
+  done < "$snap"
+  pass scenarios
+}
+
 check_manifest
 check_scope
 check_handoffs
 check_commands
+[[ "$PACK" == "six-pack" ]] && check_scenarios
 
-echo "inspect-run — solo-pack session $SESSION against project $PROJECT"
+echo "inspect-run — $PACK session $SESSION against project $PROJECT"
 for result in "${RESULTS[@]}"; do
   if [[ "$result" == PASS* ]]; then echo "  [x] ${result#PASS }"; else echo "  [ ] ${result#FAIL }"; fi
 done
