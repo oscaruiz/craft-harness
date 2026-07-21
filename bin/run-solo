@@ -70,6 +70,7 @@ esac
 PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
 PRIVATE_EVIDENCE_DIR="$PRIVATE_STATE_ROOT/solo/$PROJECT_STATE_ID"
 COMMAND_EVIDENCE_KEY="$PRIVATE_EVIDENCE_DIR/commands.key"
+APPROVAL_TOKEN="$PRIVATE_EVIDENCE_DIR/approval.token"
 
 # R6 precondition: an approved task.md must exist before any phase runs.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
@@ -388,16 +389,20 @@ start_fresh() {
   record_phase specify "$(( $(date +%s) - start ))" ok
 
   # R6 gate — pause for the owner's approval. The token is printed to THIS
-  # console (never into an agent prompt or workdir), and only its hash is kept
-  # in state, so the audited agent cannot forge an approval it never saw.
+  # console (never into an agent prompt or workdir). Its hash is kept in project
+  # state; the same token is retained under runner-private state so the human can
+  # approve through `craft-harness approve` without copying it by hand. D30's
+  # same-user malicious-agent boundary still applies.
   local token
   token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 32)"
+  (umask 077; printf '%s' "$token" > "$APPROVAL_TOKEN")
   printf '%s' "$token" | sha256sum | awk '{print $1}' > "$APPROVAL/token.sha256"
   set_status "awaiting_approval"
   write_manifest "awaiting_approval"
   echo "run-solo: specify complete — spec at $SPEC (review spec.md and features/)."
   echo "run-solo: APPROVAL REQUIRED (R6). To approve the spec, write the token below to:"
   echo "run-solo:   $APPROVAL/APPROVED"
+  echo "run-solo: approve with: craft-harness approve --project '$PROJECT'"
   echo "run-solo: then re-run: run-solo --project '$PROJECT' --adapter '$ADAPTER'"
   echo "APPROVAL_TOKEN: $token"
   exit 0

@@ -144,7 +144,14 @@
         (is (str/includes? snap "SUT-2"))))
     (testing "NO code ran (R6: approval before code)"
       (is (= base (head p)))
-      (is (some? (approval-token r1))))))
+      (is (some? (approval-token r1)))
+      (is (= (approval-token r1)
+             (slurp (str (fs/path (private-state-root p) "six"
+                                  (str/trim (:out (sh/sh "bash" "-c"
+                                                         "printf '%s' \"$1\" | sha256sum | awk '{print $1}'"
+                                                         "_" (str (fs/absolutize p)))))
+                                  "approval.token"))))
+          "the same generated token is retained outside the project for craft-harness approve"))))
 
 ;; --- the full pipeline completes, executable Gherkin enforced ----------------
 

@@ -265,18 +265,60 @@ doctor_cmd() {
   exit 0
 }
 
+# Record the human's decision at the existing runner gate without requiring the
+# human to copy a token from console output into project state. The runners keep
+# that generated token outside the project and never expose it to phase prompts
+# or environments. This is convenience within D30's same-user threat boundary;
+# it does not create a new security boundary.
+approve_cmd() {
+  [[ -n "$PROJECT" ]] || die "approve requires --project <path>"
+  [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
+  PROJECT="$(cd "$PROJECT" && pwd)"
+
+  local private_root="${CRAFT_HARNESS_PRIVATE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/craft-harness}"
+  local project_id
+  project_id="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
+  local -a pending=()
+  local pack session token_file
+  for pack in solo six; do
+    session="$PROJECT/.craft-harness/$pack/current"
+    if [[ "$(cat "$session/status" 2>/dev/null || true)" == "awaiting_approval" ]]; then
+      pending+=("$pack")
+    fi
+  done
+
+  (( ${#pending[@]} > 0 )) || die "no pending approval gate for $PROJECT"
+  (( ${#pending[@]} == 1 )) || die "multiple pending approval gates found for $PROJECT: ${pending[*]}"
+  pack="${pending[0]}"
+  session="$PROJECT/.craft-harness/$pack/current"
+  token_file="$private_root/$pack/$project_id/approval.token"
+  [[ -f "$token_file" ]] || die "pending $pack approval token is unavailable in runner-private state"
+  [[ -f "$session/approval/token.sha256" ]] || die "pending $pack approval hash is missing"
+
+  local token actual expected
+  token="$(cat "$token_file")"
+  actual="$(printf '%s' "$token" | sha256sum | awk '{print $1}')"
+  expected="$(cat "$session/approval/token.sha256")"
+  [[ -n "$token" && "$actual" == "$expected" ]] \
+    || die "runner-private approval token does not match the pending gate"
+
+  (umask 077; printf '%s' "$token" > "$session/approval/APPROVED")
+  rm -f "$token_file"
+  echo "craft-harness: approved pending $pack specification for $PROJECT"
+}
+
 # --- dispatch -------------------------------------------------------------
 
 usage() {
   cat >&2 <<'EOF'
-usage: craft-harness <run|upgrade|doctor> --project <path> [--pack <branch>]
+usage: craft-harness <run|upgrade|doctor|approve> --project <path> [--pack <branch>]
 EOF
   exit 2
 }
 
 CMD="${1:-}"
 case "$CMD" in
-  run|upgrade|doctor) shift ;;
+  run|upgrade|doctor|approve) shift ;;
   *) usage ;;
 esac
 
@@ -294,4 +336,5 @@ case "$CMD" in
   run) run_cmd ;;
   upgrade) upgrade_cmd ;;
   doctor) doctor_cmd ;;
+  approve) approve_cmd ;;
 esac

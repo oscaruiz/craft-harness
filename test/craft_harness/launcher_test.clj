@@ -124,6 +124,54 @@
 (defn install! [fork toy]
   (craft! fork {} "run" "--project" (str toy) "--pack" pack-branch))
 
+(defn private-state-dir [root pack toy]
+  (let [project (str (fs/absolutize toy))
+        project-id (str/trim (:out (sh-run {:dir toy}
+                                            "bash" "-c"
+                                            "printf '%s' \"$1\" | sha256sum | awk '{print $1}'"
+                                            "_" project)))]
+    (fs/path root pack project-id)))
+
+(defn fabricate-pending-approval! [private-root toy pack token]
+  (let [session-pack (if (= pack "solo-pack") "solo" "six")
+        session (fs/path toy ".craft-harness" session-pack "current")
+        private-dir (private-state-dir private-root session-pack toy)]
+    (write-file (fs/path session "status") "awaiting_approval\n")
+    (write-file (fs/path session "approval" "token.sha256")
+                (str (str/trim (:out (sh-run {:dir toy}
+                                              "bash" "-c"
+                                              "printf '%s' \"$1\" | sha256sum | awk '{print $1}'"
+                                              "_" token)))
+                     "\n"))
+    (write-file (fs/path private-dir "approval.token") token)
+    session))
+
+(deftest approve-completes-a-pending-runner-gate
+  (doseq [pack ["solo-pack" "six-pack"]]
+    (testing (str "approve writes the retained token for " pack)
+      (let [fork (make-fork!)
+            toy (make-toy!)
+            private-root (fs/path (tmp-dir) "private-state")
+            token (str pack "-0123456789abcdef")
+            session (fabricate-pending-approval! private-root toy pack token)
+            res (craft! fork {:env {"CRAFT_HARNESS_PRIVATE_STATE" (str private-root)}}
+                        "approve" "--project" (str toy))]
+        (is (= 0 (:exit res)))
+        (is (= token (slurp (str (fs/path session "approval" "APPROVED")))))
+        (is (re-find #"approved" (:out res)))))))
+
+(deftest approve-refuses-without-a-pending-gate
+  (let [fork (make-fork!)
+        toy (make-toy!)
+        private-root (fs/path (tmp-dir) "private-state")
+        res (craft! fork {:ok? false
+                          :env {"CRAFT_HARNESS_PRIVATE_STATE" (str private-root)}}
+                    "approve" "--project" (str toy))]
+    (is (not= 0 (:exit res)))
+    (is (re-find #"no pending approval gate" (:err res)))
+    (is (not (fs/exists? (fs/path toy ".craft-harness" "solo" "current"
+                                  "approval" "APPROVED"))))))
+
 (defn snapshot
   "path -> content for every managed file present in the toy, plus the
    version file and the installed hook. Byte-identical snapshots = no

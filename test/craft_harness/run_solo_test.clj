@@ -112,7 +112,14 @@
       (is (str/includes? (sut p) "broken"))
       (is (= base (head p))))
     (testing "a token was offered for approval"
-      (is (some? (approval-token r1))))))
+      (is (some? (approval-token r1)))
+      (is (= (approval-token r1)
+             (slurp (str (fs/path (private-state-root p) "solo"
+                                  (str/trim (:out (sh/sh "bash" "-c"
+                                                         "printf '%s' \"$1\" | sha256sum | awk '{print $1}'"
+                                                         "_" (str (fs/absolutize p)))))
+                                  "approval.token"))))
+          "the same generated token is retained outside the project for craft-harness approve"))))
 
 (deftest without-approval-the-run-stays-paused
   (let [p (make-project!) base (head p)]

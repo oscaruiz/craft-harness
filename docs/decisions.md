@@ -1146,6 +1146,55 @@ Negative tests cover contradictory duplicates in both orders, an end-to-end
 duplicate report that must turn a run red, and malformed IDs. This closes the
 audit's sole PARTIAL finding without changing any control it ruled CLOSED.
 
+## D34 — Human approval command and the inherent operating boundary (2026-07-21)
+
+The original R6 interface printed a random token and required the human to copy
+it into `.craft-harness/{solo,six}/current/approval/APPROVED`. The decision was
+real, but the transport was needless operator friction. `craft-harness approve
+--project <path>` now records that decision without changing the gate: each
+runner generates the token exactly as before, stores the same SHA-256 value in
+project session state, and compares `APPROVED` exactly as before. In addition it
+retains the generated token at
+`$CRAFT_HARNESS_PRIVATE_STATE/{solo,six}/<project-id>/approval.token` (or the
+XDG/default state root), outside the project. `approve` requires exactly one
+`awaiting_approval` session, verifies the retained token against the existing
+hash, writes the existing `APPROVED` file, and deletes the retained plaintext.
+No phase prompt or phase environment receives the token or its path. A negative
+test requires refusal when no gate is pending.
+
+This convenience does not revise D30. Runner-private means location and
+authorship, not an OS security boundary: a malicious same-user phase can search
+for and read runner state. The gate protects against an agent that never receives
+the token through the normal prompt/environment flow, consistent with the
+current “untrusted by carelessness” threat model. Strong hostile-agent isolation
+still requires a container, separate user, or filesystem policy and remains
+deferred v0.2 work.
+
+The Q2 conceptual audit also made four operating properties explicit. They are
+not defects to disguise with generic automation:
+
+1. The harness runs under WSL Ubuntu and inherits the WSL environment. Required
+   project tools must exist there; Windows-only installations do not count. D23
+   demonstrated this with JDK/Maven, and D25 closed it by provisioning Linux JDK
+   21 and Maven in WSL.
+2. Code and harden phases operate in the live project checkout. Detached
+   worktrees isolate verifier/QA and runner-owned gates, not implementation.
+   Sandboxed implementation belongs to the same deferred D30/v0.2 isolation
+   work.
+3. Contract authors must choose truthful `owns:`, `test:`, `quality:`, and
+   `accept:` values. Per D29 the harness can prove command execution and exit
+   status, not semantic adequacy. Per D26 DRY remains advisory unless a project
+   declares a meaningful real command.
+4. Multiple fresh agent turns, a human review pause, clean worktrees, and full
+   gates have irreducible cost. The harness is for bounded, contract-reviewable
+   work where that cost buys useful independent judgment. Tiny mechanical edits,
+   exploration, and broad migrations normally belong with a bare agent.
+
+R1 remains architecturally CLI-generic but empirically bounded as recorded by
+D8: Claude Code is the only formally scenario-certified backend; the Codex
+adapter exists and has real audit use, but formal WSL certification did not
+complete. User-facing documentation must not imply proven interchangeability.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

@@ -66,6 +66,7 @@ esac
 PROJECT_STATE_ID="$(printf '%s' "$PROJECT" | sha256sum | awk '{print $1}')"
 PRIVATE_EVIDENCE_DIR="$PRIVATE_STATE_ROOT/six/$PROJECT_STATE_ID"
 COMMAND_EVIDENCE_KEY="$PRIVATE_EVIDENCE_DIR/commands.key"
+APPROVAL_TOKEN="$PRIVATE_EVIDENCE_DIR/approval.token"
 
 # R6 precondition.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-six refuses to start without a task"
@@ -422,6 +423,10 @@ start_fresh() {
 
   local token
   token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 32)"
+  # Retain the generated token outside the project for `craft-harness approve`.
+  # It is not injected into any phase environment or prompt; D30's same-user
+  # malicious-agent boundary still applies.
+  (umask 077; printf '%s' "$token" > "$APPROVAL_TOKEN")
   printf '%s' "$token" | sha256sum | awk '{print $1}' > "$APPROVAL/token.sha256"
   set_status "awaiting_approval"
   write_manifest "awaiting_approval"
@@ -429,6 +434,7 @@ start_fresh() {
   echo "run-six: approved scenarios: $(tr '\n' ' ' < "$APPROVED_SCENARIOS")"
   echo "run-six: APPROVAL REQUIRED (R6). To approve the spec, write the token below to:"
   echo "run-six:   $APPROVAL/APPROVED"
+  echo "run-six: approve with: craft-harness approve --project '$PROJECT'"
   echo "run-six: then re-run: run-six --project '$PROJECT' --adapter '$ADAPTER' --pack '$PACK'"
   echo "APPROVAL_TOKEN: $token"
   exit 0
