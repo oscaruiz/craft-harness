@@ -68,10 +68,14 @@ test: mvn -q -pl src/core test
 
 quality:
   architecture: mvn -q -pl src/core -Dtest=*ArchitectureTest test
-  mutation: mvn -q -pl src/core org.pitest:pitest-maven:mutationCoverage
   duplication: ./tools/check-duplication.sh
 
 accept: ./acceptance/run.sh
+
+mutation:
+  tool: pitest
+  threshold: 80
+  command: mvn -q -pl src/core org.pitest:pitest-maven:mutationCoverage -DoutputFormats=XML && cp "$(find src/core/target/pit-reports -name mutations.xml | sort | tail -1)" "$CRAFT_MUTATION_REPORT"
 ```
 
 `accept:` must write newline-delimited JSON to the path in
@@ -80,6 +84,15 @@ accept: ./acceptance/run.sh
 passing record is `{"scenario":"SUT-1","status":"passed"}`. The command may
 wrap Cucumber, APS, or another real acceptance engine; the runner consumes the
 report schema, not a specific engine.
+
+`mutation:` is an **opt-in** gate (six-pack only; `run-solo` ignores it). When
+declared, `run-six` runs the `command` itself at the candidate, reads the **real**
+mutation score from the PITest `mutations.xml` the command writes to
+`$CRAFT_MUTATION_REPORT`, and fails the run if the score is below the
+project-declared `threshold` (0–100). The command is a **reporter** — let PIT exit
+0 and report; the harness owns the verdict (PIT can exit 0 with a poor score). Only
+`tool: pitest` is supported today. See
+[mutation-report-schema.md](mutation-report-schema.md).
 
 ### Strict fail-closed rules
 
@@ -95,6 +108,10 @@ report schema, not a specific engine.
   declared order.
 - `accept:` is optional for `solo-pack` and required for `six-pack`. Duplicate
   or empty declarations fail.
+- `mutation:` is optional (six-pack only). If present, it is a block declaring
+  exactly `tool:`, `threshold:` (integer 0–100), and `command:`. Duplicate blocks,
+  a missing/unknown/duplicate key, an out-of-range or non-numeric threshold, or an
+  unsupported tool fail closed.
 - Tabs are not allowed in command values because the durable command record is
   tab-separated.
 
@@ -216,14 +233,17 @@ Resume with the same `run-six` command. The runner:
 3. Runs fresh QA in a detached worktree at the final candidate and rejects QA
    modifications.
 4. Creates a clean gate worktree and executes `test:`, ordered `quality:`, and
-   `accept:` itself.
+   `accept:` itself, plus the `mutation:` command when one is declared.
 5. Structurally parses the acceptance report and requires every scenario ID
    snapshotted at the human gate to occur exactly once with status `passed`.
-6. Runs `inspect-run` automatically and prints `SUCCESS` only after all checks
+6. When `mutation:` is declared, structurally parses the PITest report, computes
+   the real score, and fails the run if it is below the declared `threshold`.
+7. Runs `inspect-run` automatically and prints `SUCCESS` only after all checks
    pass.
 
 Evidence is under `.craft-harness/six/current/`. A failed, undefined, missing,
-duplicate, or malformed approved scenario record turns the run red.
+duplicate, or malformed approved scenario record turns the run red, as does a
+mutation score below the declared threshold.
 
 ## Doctor and upgrade
 
@@ -247,6 +267,10 @@ The harness guarantees only what its runner can observe:
 - Verification ran in a fresh detached candidate worktree and did not modify it.
 - In six-pack, every human-approved scenario ID was structurally reported
   `passed` by the declared acceptance command.
+- When a `mutation:` gate is declared, the declared mutation command ran and its
+  real PITest score (killed / viable mutants) met the project-declared threshold.
+  This is an executable gate, **not** a correctness proof: a high score means the
+  declared tests killed *those* mutants, never that the code is fully correct (D29).
 
 It does **not** guarantee the following:
 

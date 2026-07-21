@@ -1195,6 +1195,80 @@ D8: Claude Code is the only formally scenario-certified backend; the Codex
 adapter exists and has real audit use, but formal WSL certification did not
 complete. User-facing documentation must not imply proven interchangeability.
 
+## D35 — Mutation testing as an opt-in, runner-owned executable gate (PIT/Java) (2026-07-21, m7 follow-up)
+
+A Codex conceptual audit found a philosophical drift: **mutation-as-guarantee** is
+a stated pillar of the harness's lineage, yet mutation was **absent from the full
+six-pack pipeline** — de facto advisory (D26) and, before D28, only "asserted" from
+an unreliable transcript grep (D27). D35 closes that drift by making mutation a
+real executable gate, on the same runner-owned/tamper-evident footing as
+`test:`/`quality:`/`accept:`. Design decisions (owner's, recorded before/at
+implementation, per CLAUDE.md — **not** re-litigated):
+
+**1. Opt-in per project (option C).** If `project.prompt` declares a `mutation:`
+block, `run-six` runs it as a **hard gate**; if absent, six-pack behaves exactly as
+before (no mutation evidence produced — the authenticator recipe stays byte-identical
+via an empty `cat`). `run-solo` **ignores** the block entirely: daily light-path work
+does not pay the mutation cost (proportionality). Verified: `six-pack-without-a-
+mutation-gate-is-unaffected` (green, no report, no command row) and the whole sealed
+v0.1 + m7 suite unchanged.
+
+**2. The project declares the threshold (option 1), never the harness.** A universal
+harness-fixed threshold is precisely the toy-CRAP-threshold-6 mistake D27/D28 removed:
+the project owns the standard (`threshold: 0–100`), the harness owns **execution and
+verdict**. Fail-closed on a malformed / duplicate / out-of-range / non-numeric
+threshold, at parse time, before any agent starts (`bin/parse-project`, tests in
+`project-contract-test`).
+
+**3. Recognize the real score — parse PIT structurally, don't rubber-stamp the exit
+code.** The key fidelity point: PIT can exit 0 with a poor score. `run-six` runs the
+declared command as a **reporter** (`CRAFT_MUTATION_REPORT` at a runner-owned path
+outside the worktree), then `bin/parse-mutation-report.bb` parses PIT's
+`mutations.xml` **as XML** (`clojure.data.xml`, never by substring — the D22/D27
+trap): `killed` = `detected='true'`, `total` = all mutants except `NON_VIABLE`
+(matching PIT's own denominator). The gate uses **exact integer arithmetic**
+(`killed*100 >= threshold*total`) so float rounding cannot nudge a run over its
+threshold. A zero-mutant / malformed / wrong-root report fails closed. See
+`docs/mutation-report-schema.md`.
+
+**4. The gate genuinely bites — proven, not hard-coded.** The non-toy fixture
+(`test/fixtures/sixpack-mut`) ships a **genuine miniature mutation runtime** that
+really mutates a module (`core/rules.sh`) and runs the candidate's own tests
+(`core/rules-test.sh`) against each mutant — so the score reflects **actual test
+strength**, the same "genuine execution, not rubber-stamp" bar the executable-Gherkin
+gate met (D32). A **weak** suite lets mutants survive (genuinely-computed 1/7 = 14%
+< 80% → run **RED** at the mutation gate, attributed, naming the score) and a
+**strong** suite kills them (7/7 = 100% ≥ 80% → green). The red comes from real
+surviving mutants in the retained report, never a planted number. A real project
+swaps the miniature for `mvn ... pitest:mutationCoverage` + a copy of PIT's own
+`mutations.xml` to `$CRAFT_MUTATION_REPORT`; the gate consumes the schema, not the
+engine, so the suite stays hermetic (no JVM/Maven — no D8/D23 toolchain fragility).
+
+**5. Runner-owned, tamper-evident inspection.** `inspect-run` re-verifies the gate
+as six-pack evidence, consistent with how it verifies `test:`/`quality:`: the
+mutation command must appear as a successful row in the authenticated `commands.tsv`
+(exact contract↔execution structure match), and a new `check_mutation` independently
+re-derives the score from the report and re-checks it against the project threshold.
+The report is folded into the m6/m7 command-evidence MAC (extended recipe matched
+exactly by `inspect-run`), so a post-run edit fails inspection as tampering
+(`tampered-mutation-evidence-is-rejected`). Accidental-tamper-evident only, **not**
+forgery-proof against a malicious same-user agent (D30, unchanged).
+
+**6. Honest boundary (D29 carried forward, not re-litigated).** This adds mutation as
+an **executable** gate, not a semantic-adequacy guarantee: a high score means the
+declared tests killed **these** mutants against the candidate — not that the code is
+fully correct, nor that the mutation command targets the relevant module (choosing a
+truthful `command`/`threshold` is the contract author's job, per D29/D34). PIT/Java
+only for now; Stryker/TypeScript is an out-of-scope later extension (the `MUTATION`
+record already carries the tool, so a second engine slots in without a grammar change).
+
+**Verification.** parse-project, parse-mutation-report, and the genuine mutation tool
+were each unit-verified directly; the full `run-six`→gate→`inspect-run` pipeline was
+run end-to-end for both the green (strong) and red (weak) variants plus the tamper
+and opt-in negatives. Per the standing separation that kept every prior milestone
+sound, D35 goes to a fresh **external** (Codex) adversarial audit against its own
+criteria — not self-review.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
