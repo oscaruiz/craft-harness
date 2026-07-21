@@ -1,0 +1,24 @@
+Project: the non-toy m7 fixture WITH an opt-in mutation gate (D35).
+
+Same two-module core+web project as the base six-pack fixture, plus a genuine
+mutation-testing gate. The project owns the standard (threshold 80); the harness
+owns execution + verdict. `core/rules.sh` is a small pure-logic module under
+mutation; `core/rules-test.sh` is its unit test whose strength the mutants probe.
+`tools/mutation-run.sh` is the project's declared mutation command — a genuine
+miniature that mutates rules.sh, runs rules-test.sh against each mutant, and emits
+a PITest-shaped mutations.xml so the runner reads a REAL score (never hard-coded).
+
+owns:
+  core/**
+  web/**
+  features/**
+  acceptance/steps.sh
+test: bash run-unit.sh
+quality:
+  architecture: bash tools/arch-check.sh
+  dup: bash tools/dup-check.sh
+accept: bash acceptance/run-acceptance.sh
+mutation:
+  tool: pitest
+  threshold: 80
+  command: bash tools/mutation-run.sh

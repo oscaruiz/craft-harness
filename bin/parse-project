@@ -16,8 +16,10 @@ file="${1:-}"
 
 owns_seen=0; owns_count=0; quality_seen=0; quality_count=0; test_seen=0; test_cmd=""
 accept_seen=0; accept_cmd=""
+mutation_seen=0; mut_tool=""; mut_threshold=""; mut_command=""
 mode=""
 declare -a owns=() quality_names=() quality_cmds=()
+declare -A mut_keys=()
 while IFS= read -r line || [[ -n "$line" ]]; do
   if [[ -n "$mode" ]]; then
     if [[ -z "${line//[[:space:]]/}" ]]; then mode=""; continue; fi
@@ -38,6 +40,20 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$cmd" != *$'\t'* ]] || die "quality command '$name' must not contain a tab"
     for prior in "${quality_names[@]:-}"; do [[ "$prior" != "$name" ]] || die "duplicate quality gate: $name"; done
     quality_names+=("$name"); quality_cmds+=("$cmd"); quality_count=$((quality_count + 1)); continue
+  fi
+  if [[ "$mode" == "mutation" ]]; then
+    value="$line"; value="${value#"${value%%[![:space:]]*}"}"
+    [[ "$value" =~ ^(tool|threshold|command):[[:space:]]+(.+[^[:space:]]|[^[:space:]])$ ]] \
+      || die "mutation entry must be 'tool: <t>', 'threshold: <0-100>', or 'command: <cmd>': '$value'"
+    mkey="${BASH_REMATCH[1]}"; mval="${BASH_REMATCH[2]}"
+    [[ -z "${mut_keys[$mkey]:-}" ]] || die "duplicate mutation key: $mkey"
+    mut_keys[$mkey]=1
+    case "$mkey" in
+      tool)      [[ "$mval" != *[[:space:]]* ]] || die "mutation tool must be a single token: '$mval'"; mut_tool="$mval" ;;
+      threshold) mut_threshold="$mval" ;;
+      command)   [[ "$mval" != *$'\t'* ]] || die "mutation command must not contain a tab"; mut_command="$mval" ;;
+    esac
+    continue
   fi
   if [[ "$line" =~ ^owns:[[:space:]]*$ ]]; then
     (( owns_seen == 0 )) || die "duplicate owns: block"
@@ -67,14 +83,27 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     continue
   fi
   [[ ! "$line" =~ ^accept: ]] || die "accept: must contain one non-empty command after a space"
+  if [[ "$line" =~ ^mutation:[[:space:]]*$ ]]; then
+    (( mutation_seen == 0 )) || die "duplicate mutation: block"
+    mutation_seen=1; mode="mutation"; continue
+  fi
+  [[ ! "$line" =~ ^mutation: ]] || die "mutation: must start a block"
 done < "$file"
 
 (( owns_seen == 1 && owns_count > 0 )) || die "required owns: block is missing or empty"
 (( test_seen == 1 )) || die "required test: command is missing"
 (( quality_seen == 0 || quality_count > 0 )) || die "quality: block is empty"
+if (( mutation_seen == 1 )); then
+  [[ -n "${mut_keys[tool]:-}" ]]      || die "mutation: block requires a 'tool' entry"
+  [[ -n "${mut_keys[threshold]:-}" ]] || die "mutation: block requires a 'threshold' entry"
+  [[ -n "${mut_keys[command]:-}" ]]   || die "mutation: block requires a 'command' entry"
+  [[ "$mut_threshold" =~ ^[0-9]+$ ]]  || die "mutation threshold must be an integer 0-100: '$mut_threshold'"
+  (( 10#$mut_threshold >= 0 && 10#$mut_threshold <= 100 )) || die "mutation threshold must be between 0 and 100: '$mut_threshold'"
+fi
 for value in "${owns[@]}"; do printf 'OWN\t%s\n' "$value"; done
 printf 'TEST\t%s\n' "$test_cmd"
 for ((i=0; i<${#quality_names[@]}; i++)); do
   printf 'QUALITY\t%s\t%s\n' "${quality_names[$i]}" "${quality_cmds[$i]}"
 done
 if (( accept_seen == 1 )); then printf 'ACCEPT\t%s\n' "$accept_cmd"; fi
+if (( mutation_seen == 1 )); then printf 'MUTATION\t%s\t%s\t%s\n' "$mut_tool" "$mut_threshold" "$mut_command"; fi
