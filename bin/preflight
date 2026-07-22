@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# D39 usability preflight: friendly mirrors of existing runtime preconditions.
+# This does not replace or weaken any runner-owned gate.
+set -euo pipefail
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT=""; PACK=""; ALLOW_CURRENT=""
+usage() { echo "usage: preflight --project <path> --pack <solo-pack|six-pack> [--allow-current <solo|six>]" >&2; exit 2; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --project) PROJECT="${2:-}"; shift 2 ;;
+    --pack) PACK="${2:-}"; shift 2 ;;
+    --allow-current) ALLOW_CURRENT="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+[[ -n "$PROJECT" && -n "$PACK" && -d "$PROJECT/.git" ]] || usage
+PROJECT="$(cd "$PROJECT" && pwd)"
+
+fail() { # <exit> <message>
+  local code="$1"; shift
+  echo "preflight: $*" >&2
+  exit "$code"
+}
+
+# Exit 30 mirrors doctor's established in-flight state without invoking doctor,
+# which also expects an installed pack and checks version/integrity state.
+in_flight_reason() {
+  local p="$1" hb="$1/.swarmforge/handoffs" kind state status
+  if compgen -G "$p/.worktrees/*" >/dev/null 2>&1; then echo "agent worktree(s) under .worktrees/"; return; fi
+  if compgen -G "$hb/inbox/new/*" >/dev/null 2>&1; then echo "unconsumed handoff(s) in inbox/new/"; return; fi
+  if compgen -G "$hb/inbox/in_process/*" >/dev/null 2>&1; then echo "half-processed handoff(s) in inbox/in_process/"; return; fi
+  if compgen -G "$hb/outbox/*" >/dev/null 2>&1; then echo "unsent handoff(s) in outbox/"; return; fi
+  for kind in solo six; do
+    [[ "$kind" == "$ALLOW_CURRENT" ]] && continue
+    state="$p/.craft-harness/$kind/current"
+    [[ -d "$state" ]] || continue
+    status="$(cat "$state/status" 2>/dev/null || echo unknown)"
+    [[ "$status" == done ]] || { echo "$kind-pack session in flight (status=$status)"; return; }
+  done
+}
+reason="$(in_flight_reason "$PROJECT")"
+[[ -z "$reason" ]] || fail 30 "in-flight session detected — $reason; inspect it with 'craft-harness doctor --project $PROJECT'"
+
+contract="$(bash "$FORK_ROOT/bin/parse-project" "$PROJECT/project.prompt" 2>&1)" \
+  || fail 41 "invalid project.prompt contract — $contract"
+
+accept_seen=0; mutation_tool=""; network_mode=""
+declare -a labels=() commands=()
+while IFS=$'\t' read -r kind a b c; do
+  case "$kind" in
+    TEST) labels+=(test); commands+=("$a") ;;
+    QUALITY) labels+=("quality:$a"); commands+=("$b") ;;
+    ACCEPT) accept_seen=1; labels+=(accept); commands+=("$a") ;;
+    MUTATION) mutation_tool="$a"; labels+=(mutation); commands+=("$c") ;;
+    NETWORK) network_mode="$a" ;;
+  esac
+done <<< "$contract"
+if [[ "$PACK" == six-pack && "$accept_seen" != 1 ]]; then
+  fail 41 "six-pack project.prompt contract requires one non-empty accept: command"
+fi
+if [[ "$PACK" == six-pack && -n "$mutation_tool" && "$mutation_tool" != pitest ]]; then
+  fail 41 "six-pack project.prompt contract uses unsupported mutation tool '$mutation_tool' (only 'pitest' is supported)"
+fi
+# Mirror of run-six's D38 fail-closed namespace check, moved before any state:
+# a contract this host cannot honor is a contract error, not a mid-run surprise.
+if [[ "$PACK" == six-pack && "$network_mode" == none ]]; then
+  unshare -rn true 2>/dev/null \
+    || fail 41 "project declares 'network: none' but this host cannot create an unprivileged network namespace (unshare -rn failed) — refusing fail-closed before any phase rather than running the gates with live egress"
+fi
+
+command_tool() { # best-effort shell entrypoint extraction, without evaluation
+  local command="$1" word
+  read -r -a words <<< "$command"
+  for word in "${words[@]}"; do
+    [[ "$word" == env || "$word" == command || "$word" == exec ]] && continue
+    [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && continue
+    printf '%s' "$word"
+    return
+  done
+}
+for ((i=0; i<${#commands[@]}; i++)); do
+  tool="$(command_tool "${commands[$i]}")"
+  [[ -n "$tool" ]] || fail 42 "declared ${labels[$i]} command has no resolvable executable: ${commands[$i]}"
+  if [[ "$tool" == */* ]]; then
+    [[ "$tool" == /* ]] && candidate="$tool" || candidate="$PROJECT/$tool"
+    [[ -f "$candidate" && -x "$candidate" ]] \
+      || fail 42 "declared ${labels[$i]} tool '$tool' is not an executable file in this project; create/chmod it or correct project.prompt"
+  else
+    command -v -- "$tool" >/dev/null 2>&1 \
+      || fail 42 "declared ${labels[$i]} tool '$tool' is not resolvable on PATH; install it in this environment or correct project.prompt"
+  fi
+done
+
+git -C "$PROJECT" diff --quiet && git -C "$PROJECT" diff --cached --quiet \
+  || fail 43 "tracked working tree is dirty — commit or stash tracked changes before running"
+
+if ! git -C "$PROJECT" config user.name >/dev/null 2>&1 \
+|| ! git -C "$PROJECT" config user.email >/dev/null 2>&1; then
+  if [[ "${CRAFT_PREFLIGHT_TEST_IDENTITY_FAIL:-}" == 1 ]] \
+  || ! git -C "$PROJECT" config --local user.name craft-harness \
+  || ! git -C "$PROJECT" config --local user.email noreply@craft-harness.local; then
+    fail 44 "no usable Git identity exists and the repo-local fallback could not be seeded; configure user.name and user.email locally or globally"
+  fi
+fi
+
+echo "preflight: PASS — contract, tools, clean tree, identity and session state"

@@ -16,6 +16,7 @@
                 (require 'craft-harness.handoff-schema-test)
                 (require 'craft-harness.parse-owns-test)
                 (require 'craft-harness.project-contract-test)
+                (require 'craft-harness.preflight-test)
                 (require 'craft-harness.run-solo-test)
                 (require 'craft-harness.pack-manifest-test)
                 (require 'craft-harness.six-pack-test)
@@ -32,6 +33,7 @@
                                                                     'craft-harness.handoff-schema-test
                                                                     'craft-harness.parse-owns-test
                                                                     'craft-harness.project-contract-test
+                                                                    'craft-harness.preflight-test
                                                                     'craft-harness.run-solo-test
                                                                     'craft-harness.pack-manifest-test
                                                                     'craft-harness.six-pack-test)]
