@@ -1441,6 +1441,71 @@ their suites (six-pack, project-contract, real-adapters) and fixtures
 both sealed runners' CLOSED gates, upstream scripts and articles: byte-for-byte
 untouched.
 
+**Amendment (2026-07-22) — honest scoping; hardening suggestions rejected.**
+A confirmation audit (Codex) ruled all three controls GENUINE: the allowlist
+constrains with no first-token loophole, the R6 gate discards a planted
+`APPROVED`, the egress path is fail-closed, and the sealed gates are intact. It
+attached reservations that the controls are "under-scoped for a HOSTILE model."
+Two distinct things in that audit are treated differently here.
+
+*Accepted — the language must not over-imply containment.* Read together, the
+prose above can read as if D38 sandboxes the agent. It does not. Stated plainly,
+so nothing downstream mistakes the boundary:
+
+- These are **accident-boundary controls for the D30 careless model**, not a
+  hostile-agent sandbox. Everything D38 enforces exists to keep an agent's
+  *mistakes* — a skipped test, a forgotten step, an injected "approval", an
+  undeclared `curl` — from becoming verdicts or silent egress. None of it
+  contains an agent that is *trying* to escape.
+- A **declared command can run arbitrary code by design.** The allowlist admits
+  each declared `test:`/`quality:`/`accept:`/`mutation:` command (control 2);
+  those commands, and anything they spawn (mvn plugins, project scripts, git
+  hooks/aliases), execute freely. That is the point of a declared toolchain, not
+  a hole in it. The developer's own user-level Claude settings still apply on
+  top.
+- **`network: none` contains only the declared, runner-owned gate commands.**
+  Everything outside that wrap is not network-contained: the agent phases are
+  never namespaced (control 3a — the CLI needs its API endpoint), and so any
+  pre-run/post-run steps, and any non-declared egress a declared toolchain
+  performs *during a phase* (Maven pulling dependencies, a git hook reaching the
+  network), are restricted only at the tool layer (no WebFetch/WebSearch, no
+  undeclared Bash) — not by a namespace. The tool layer stops the agent from
+  *typing* `curl`; it does not stop a legitimately-declared `mvn` from talking to
+  the internet.
+- All of the above is the **direct, consistent consequence of deliberately
+  declining the OS-isolation tier in D30**, not an oversight. Per-process network
+  jails, a filesystem read boundary, and a separate-user/container execution
+  model are exactly the "v2 security path … explicitly outside the current
+  harness scope" that D30 ruled out. You cannot decline OS isolation and still
+  get hostile-agent containment; D38 buys the accident boundary that *is* cheaply
+  enforceable and says so.
+
+*Rejected — the three hardening suggestions, and why.* The audit proposed
+(a) running pre-run/post-run steps inside the `unshare -rn` namespace too,
+(b) making gate namespacing egress-by-default rather than opt-in, and
+(c) sniffing declared commands to detect network use. Each defends against a
+**malicious same-user agent** — precisely the threat model the earlier
+decision-support audit ruled *over-engineering for this solo user*, on which
+basis the full OS-sandbox tier was declined (D30; carried into the m8
+framing). Building any of the three is that same over-engineering re-entering
+through a smaller door: (a) namespacing pre/post steps hardens against an agent
+deliberately routing egress around the gate wrap — a hostile move, not a careless
+one; (b) egress-by-default breaks legitimate first-run dependency fetches
+(Maven Central) to defend against the same hostile case, trading real
+false-positives for a guarantee we've said we don't make; (c) command sniffing
+is an arms race against an adversary who can rename or wrap binaries — worthless
+against carelessness (which doesn't hide) and defeated by malice (which does).
+
+*Inconsistency, recorded for future reference.* These reservations evaluate D38
+against the hostile-agent model that Codex's own decision-support audit ruled out
+for this user two audits earlier. "Insufficient against a hostile agent" is
+therefore **by design, not a gap**: it is the same conclusion D30 reached,
+restated at the control layer. If a future decision genuinely re-opens the
+malicious-agent model for this project, the correct move is to revisit D30's
+OS-isolation decline wholesale — not to bolt these three partial defenses onto an
+accident boundary, which would deliver sandbox costs (broken Maven runs, an
+egress arms race) without a sandbox's guarantee.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,
