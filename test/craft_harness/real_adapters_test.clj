@@ -48,11 +48,15 @@ echo \"stub ran\"
 (defn adapter-exe [adapter exe]
   (str (fs/path repo-root "adapters" adapter exe)))
 
-(defn run-adapter [adapter exe {:keys [bin log]} & args]
+(defn run-adapter* [adapter exe {:keys [bin log]} extra-env & args]
   (apply sh/sh "bash" (adapter-exe adapter exe)
-         (concat args [:env {"PATH" (str bin ":" (System/getenv "PATH"))
-                             "HOME" (System/getenv "HOME")
-                             "STUB_LOG" (str log)}])))
+         (concat args [:env (merge {"PATH" (str bin ":" (System/getenv "PATH"))
+                                    "HOME" (System/getenv "HOME")
+                                    "STUB_LOG" (str log)}
+                                   extra-env)])))
+
+(defn run-adapter [adapter exe stub & args]
+  (apply run-adapter* adapter exe stub {} args))
 
 (defn make-workdir-and-prompt []
   (let [d (tmp-dir)
@@ -76,11 +80,75 @@ echo \"stub ran\"
     (let [args (argv stub)]
       (testing "headless one-shot"
         (is (some #{"-p"} args)))
-      (testing "inherit-env (D23): the interactive permission gate is skipped so the phase can run its own toolchain (mvn/java/git); containment is the R9 hook + owns: allowlist (D2/D19), not the CLI prompt"
-        (is (some #{"--dangerously-skip-permissions"} args))
-        (is (not (some #{"--permission-mode"} args))))
+      (testing "the D23 skip-all bypass is GONE (D38): a scoped allowlist replaces it"
+        (is (not (some #{"--dangerously-skip-permissions"} args)))
+        (is (not (some #{"--permission-mode"} args)))
+        (is (some #{"--allowedTools"} args)))
+      (testing "baseline allowlist: file edits, git, and nothing else"
+        (is (some #{"Edit"} args))
+        (is (some #{"Write"} args))
+        (is (some #{"Bash(git:*)"} args)))
+      (testing "agent-tool network egress is denied explicitly (D38 item 1)"
+        (is (some #{"--disallowedTools"} args))
+        (is (some #{"WebFetch"} args))
+        (is (some #{"WebSearch"} args)))
+      (testing "no --add-dir outside a runner phase (no runner env present)"
+        (is (not (some #{"--add-dir"} args))))
       (testing "the prompt text is passed through"
         (is (some #(str/includes? % "PHASE: edit") args))))))
+
+(deftest claude-code-invoke-allowlists-exactly-the-declared-commands
+  (let [stub (make-stub! "claude")
+        {:keys [wd prompt]} (make-workdir-and-prompt)]
+    (spit (str (fs/path wd "project.prompt"))
+          (str "owns:\n  src/**\n"
+               "test: mvn -q test\n"
+               "quality:\n  architecture: bash tools/arch.sh\n"
+               "accept: bash acceptance/run.sh\n"
+               "mutation:\n  tool: pitest\n  threshold: 80\n"
+               "  command: mvn -q org.pitest:pitest-maven:mutationCoverage\n"))
+    (let [res (run-adapter "claude-code" "invoke" stub
+                           "--workdir" (str wd) "--prompt-file" (str prompt))]
+      (is (= 0 (:exit res)) (str (:out res) (:err res)))
+      (let [args (argv stub)]
+        (testing "each declared command is allowed EXACTLY and with appended args — test, quality, accept, mutation"
+          (doseq [cmd ["mvn -q test"
+                       "bash tools/arch.sh"
+                       "bash acceptance/run.sh"
+                       "mvn -q org.pitest:pitest-maven:mutationCoverage"]]
+            (is (some #{(str "Bash(" cmd ")")} args) cmd)
+            (is (some #{(str "Bash(" cmd ":*)")} args) (str cmd " with args"))))
+        (testing "NO blanket first-token rule leaks in (a declared 'bash x.sh' must not allow all of bash)"
+          (is (not (some #{"Bash(bash:*)"} args)))
+          (is (not (some #{"Bash(mvn:*)"} args))))))))
+
+(deftest claude-code-invoke-tolerates-an-unparseable-contract
+  (testing "an invalid project.prompt degrades to the baseline allowlist (the runners fail-closed on it long before a phase; a direct invoke must not crash)"
+    (let [stub (make-stub! "claude")
+          {:keys [wd prompt]} (make-workdir-and-prompt)]
+      (spit (str (fs/path wd "project.prompt")) "not a contract at all\n")
+      (let [res (run-adapter "claude-code" "invoke" stub
+                             "--workdir" (str wd) "--prompt-file" (str prompt))]
+        (is (= 0 (:exit res)) (str (:out res) (:err res)))
+        (let [args (argv stub)]
+          (is (some #{"Bash(git:*)"} args))
+          (is (not (some #(str/starts-with? % "Bash(mvn") args))))))))
+
+(deftest claude-code-invoke-adds-the-runner-state-dir-for-worktree-phases
+  (testing "when the runner exports the handoffs dir (qa/verify run in a detached worktree), the session state dir is granted via --add-dir"
+    (let [stub (make-stub! "claude")
+          {:keys [wd prompt]} (make-workdir-and-prompt)
+          state (fs/path (tmp-dir) "six-state")
+          handoffs (fs/path state "handoffs")]
+      (fs/create-dirs handoffs)
+      (doseq [env-var ["SIX_HANDOFFS_DIR" "SOLO_HANDOFFS_DIR"]]
+        (let [res (run-adapter* "claude-code" "invoke" stub
+                                {env-var (str handoffs)}
+                                "--workdir" (str wd) "--prompt-file" (str prompt))]
+          (is (= 0 (:exit res)) (str env-var ": " (:out res) (:err res)))
+          (let [args (argv stub)]
+            (is (some #{"--add-dir"} args) env-var)
+            (is (some #{(str (fs/canonicalize state))} args) env-var)))))))
 
 (deftest claude-code-info-names-the-cli
   (let [stub (make-stub! "claude")

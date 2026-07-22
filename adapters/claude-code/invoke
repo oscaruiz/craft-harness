@@ -2,18 +2,30 @@
 # craft-harness adapter: Claude Code, headless mode (adapters/CONTRACT.md).
 # One agent turn: `claude -p` on the prompt, cwd = workdir.
 #
-# Permissions (D23, inherit-env decision): a real project phase must run its own
-# toolchain (mvn/java, git commit) and inherit the developer's environment.
-# `--permission-mode acceptEdits` prompts for every Bash command, and a headless
-# turn cannot answer the prompt — so it DENIED mvn, git config, git commit, and
-# the CRAP/DRY wrappers, which is what blocked the first real Maven run (D23). We
-# skip the interactive permission gate here: the real containment is the R9
-# pre-commit hook + the owns: allowlist + run-solo's owned-scope check (D2/D19),
-# not the CLI's per-command prompt. (An isolated provisioned sandbox is the
-# stronger posture — deferred as a possible v0.2, per the D24 verdict.)
+# Permissions (D38, replacing the D23 skip-all): a headless turn cannot answer
+# an interactive permission prompt, so everything a phase legitimately needs
+# must be pre-authorized — and nothing else. Where D23's stopgap was
+# --dangerously-skip-permissions (any command at all), the turn now runs under
+# an explicit scoped allowlist:
+#   Edit / Write            file changes, confined to the CLI's allowed dirs
+#   Bash(git:*)             the phase's own git work (D23: config/add/commit)
+#   Bash(<declared cmd>)    each project-contract command (test:/quality:/
+#     + Bash(<cmd>:*)       accept:/mutation:), exact and with appended args —
+#                           parsed structurally from the workdir's
+#                           project.prompt, never guessed from prose
+#   --add-dir <state dir>   the runner's session dir (handoffs/spec/diff) when
+#                           a phase works in a detached worktree
+# Agent-tool network egress (WebFetch/WebSearch) is denied explicitly; any
+# undeclared Bash (curl, wget, ...) is off the allowlist and a headless turn
+# denies what it cannot ask about. This contains the D30 threat model —
+# carelessness, not malice: a declared toolchain (mvn, a bash script) can run
+# arbitrary code by design, so the allowlist is an accident boundary, not a
+# hostile-agent sandbox (that remains the declined v0.2 OS-isolation, D38).
 set -euo pipefail
 
 usage() { echo "usage: invoke --workdir <dir> --prompt-file <file>" >&2; exit 2; }
+
+FORK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 WORKDIR=""
 PROMPT=""
@@ -26,5 +38,36 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -d "$WORKDIR" && -f "$PROMPT" ]] || usage
 
+ALLOWED=("Edit" "Write" "Bash(git:*)")
+# Declared project commands become exact + args-appended Bash rules. An absent
+# or unparseable contract contributes nothing: the runners fail-closed on an
+# invalid contract long before any phase runs, so degrading a direct invoke to
+# the baseline allowlist is safe, never fail-open.
+if [[ -f "$WORKDIR/project.prompt" ]]; then
+  while IFS=$'\t' read -r kind a b c; do
+    cmd=""
+    case "$kind" in
+      TEST|ACCEPT) cmd="$a" ;;
+      QUALITY) cmd="$b" ;;
+      MUTATION) cmd="$c" ;;
+    esac
+    [[ -n "$cmd" ]] || continue
+    ALLOWED+=("Bash($cmd)" "Bash($cmd:*)")
+  done < <(bash "$FORK_ROOT/bin/parse-project" "$WORKDIR/project.prompt" 2>/dev/null || true)
+fi
+
+# Worktree phases (solo verify, six qa) write their handoff and read spec/diff
+# under the runner's session state dir, which sits OUTSIDE their workdir; grant
+# that one directory. The runner exports the handoffs dir per phase.
+EXTRA_DIRS=()
+for hd in "${SIX_HANDOFFS_DIR:-}" "${SOLO_HANDOFFS_DIR:-}"; do
+  [[ -n "$hd" && -d "$hd" ]] || continue
+  EXTRA_DIRS+=(--add-dir "$(cd "$hd/.." && pwd)")
+done
+
 cd "$WORKDIR"
-exec claude -p --dangerously-skip-permissions "$(cat "$PROMPT")"
+# ${arr[@]+...} keeps the empty-array expansion legal under bash 3.2 set -u (macOS).
+exec claude -p "$(cat "$PROMPT")" \
+  ${EXTRA_DIRS[@]+"${EXTRA_DIRS[@]}"} \
+  --disallowedTools "WebFetch" "WebSearch" \
+  --allowedTools "${ALLOWED[@]}"
