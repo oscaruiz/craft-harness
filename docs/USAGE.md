@@ -268,7 +268,8 @@ The harness guarantees only what its runner can observe:
 - In six-pack, every human-approved scenario ID was structurally reported
   `passed` by the declared acceptance command.
 - When a `mutation:` gate is declared, the declared mutation command ran and its
-  real PITest score (killed / viable mutants) met the project-declared threshold.
+  real PITest score (detected / all mutants — PIT's own denominator) met the
+  project-declared threshold.
   This is an executable gate, **not** a correctness proof: a high score means the
   declared tests killed *those* mutants, never that the code is fully correct (D29).
 

@@ -365,16 +365,28 @@
 ;; a strong suite kills them (real high score -> green). Not a hardcoded fake.
 
 (deftest mutation-report-parser-reads-the-real-score
-  (testing "killed = detected='true'; total excludes non-viable mutants (PIT semantics)"
+  (testing "PIT's own score: total = ALL mutants; killed = the isDetected() statuses"
+    ;; KILLED and TIMED_OUT both isDetected()==true.
     (is (= "2\t2" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='true' status='TIMED_OUT'/></mutations>")))))
+    ;; SURVIVED and NO_COVERAGE count toward total but not killed.
     (is (= "1\t3" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='false' status='SURVIVED'/><mutation detected='false' status='NO_COVERAGE'/></mutations>")))))
-    (is (= "1\t2" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='false' status='SURVIVED'/><mutation detected='false' status='NON_VIABLE'/></mutations>")))))))
+    ;; NON_VIABLE(true) is DETECTED and counts in BOTH numerator and denominator --
+    ;; PIT does not exclude it (D36). {KILLED, SURVIVED, NON_VIABLE} => 2 killed / 3.
+    (is (= "2\t3" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='KILLED'/><mutation detected='false' status='SURVIVED'/><mutation detected='true' status='NON_VIABLE'/></mutations>")))))
+    ;; Every remaining detected status counts as killed; NO_COVERAGE does not.
+    (is (= "4\t5" (str/trim (:out (parse-mut "<mutations><mutation detected='true' status='MEMORY_ERROR'/><mutation detected='true' status='RUN_ERROR'/><mutation detected='true' status='EQUIVALENT'/><mutation detected='true' status='TIMED_OUT'/><mutation detected='false' status='NO_COVERAGE'/></mutations>")))))))
 
 (deftest mutation-report-parser-fails-closed
-  (doseq [xml ["<mutations></mutations>"                                    ; zero mutants
-               "<mutations><mutation status='KILLED'/></mutations>"         ; missing detected
+  (doseq [xml ["<mutations></mutations>"                                       ; zero mutants
+               "<mutations><mutation status='KILLED'/></mutations>"            ; missing detected
                "<report><mutation detected='true' status='KILLED'/></report>" ; wrong root
-               "<mutations><mutation "]]                                     ; malformed XML
+               "<mutations><mutation "                                         ; malformed XML
+               "<mutations><mutation detected='true' status='SURVIVED'/></mutations>"      ; self-contradictory: SURVIVED is not detected
+               "<mutations><mutation detected='false' status='KILLED'/></mutations>"       ; self-contradictory: KILLED is detected
+               "<mutations><mutation detected='true' status='EVERYTHING_IS_FINE'/></mutations>" ; invented status
+               "<mutations><mutation detected='false' status='STARTED'/></mutations>"      ; in-flight -> incomplete report
+               "<mutations><mutation detected='false' status='NOT_STARTED'/></mutations>" ; in-flight -> incomplete report
+               "<mutations><wrapper><mutation detected='true' status='KILLED'/></wrapper></mutations>"]] ; nested, not a direct child
     (is (not (zero? (:exit (parse-mut xml)))) (str "must reject: " xml))))
 
 (deftest mutation-gate-passes-when-tests-kill-the-mutants

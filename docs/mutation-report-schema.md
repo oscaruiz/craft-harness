@@ -57,12 +57,22 @@ teardown). One `<mutation>` element per generated mutant:
 **structurally as XML — never by substring** (the D22/D27 "passed for the wrong
 reason" trap) — and prints `<killed><TAB><total>`:
 
-- `killed` = mutations with the authoritative `detected='true'` attribute
-  (`KILLED`/`TIMED_OUT`/`MEMORY_ERROR`/`RUN_ERROR`).
-- `total` = all mutations **except** `NON_VIABLE` (uncompilable) ones, which PIT
-  itself excludes from the denominator.
-- A report with **zero scorable mutations**, a missing/invalid `detected`, a wrong
-  root element, or malformed XML fails closed — a gate over no mutants proves nothing.
+- `total` = **every** `<mutation>` — PIT's own denominator
+  (`getTotalMutations()`), with nothing excluded.
+- `killed` = every mutant whose status is a **detected** one (PIT's
+  `isDetected()==true`): `KILLED`, `TIMED_OUT`, `MEMORY_ERROR`, `RUN_ERROR`,
+  `NON_VIABLE`, `EQUIVALENT`. `SURVIVED` and `NO_COVERAGE` are the only not-detected
+  terminal statuses. `NON_VIABLE` is **not** excluded — PIT declares `NON_VIABLE(true)`,
+  so it counts in **both** numerator and denominator (see `docs/decisions.md` D36).
+- The parser is **fail-closed on an off-schema report**: `status` must be a terminal
+  PIT status (an in-flight `STARTED`/`NOT_STARTED` marks an *incomplete* report;
+  anything else is invented), the `detected` attribute must **agree** with that
+  status's canonical `isDetected()` value (a self-contradictory `detected='true'
+  status='SURVIVED'` is rejected, never scored), and only `<mutation>` elements that
+  are **direct children** of the `<mutations>` root count (a nested `<mutation>` is
+  ignored, never smuggled in). A report with **zero mutations**, a missing/invalid
+  `detected`, a wrong root element, or malformed XML also fails closed — a gate over
+  no mutants proves nothing.
 
 ## How the runner uses it
 

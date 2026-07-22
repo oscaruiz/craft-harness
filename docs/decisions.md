@@ -1225,11 +1225,14 @@ code.** The key fidelity point: PIT can exit 0 with a poor score. `run-six` runs
 declared command as a **reporter** (`CRAFT_MUTATION_REPORT` at a runner-owned path
 outside the worktree), then `bin/parse-mutation-report.bb` parses PIT's
 `mutations.xml` **as XML** (`clojure.data.xml`, never by substring — the D22/D27
-trap): `killed` = `detected='true'`, `total` = all mutants except `NON_VIABLE`
-(matching PIT's own denominator). The gate uses **exact integer arithmetic**
-(`killed*100 >= threshold*total`) so float rounding cannot nudge a run over its
-threshold. A zero-mutant / malformed / wrong-root report fails closed. See
-`docs/mutation-report-schema.md`.
+trap): `total` = **every** mutant (PIT's `getTotalMutations()` denominator) and
+`killed` = the mutants whose status is a detected one (`isDetected()==true`). The
+gate uses **exact integer arithmetic** (`killed*100 >= threshold*total`) so float
+rounding cannot nudge a run over its threshold. A zero-mutant / malformed /
+wrong-root report fails closed. See `docs/mutation-report-schema.md`.
+*(Correction: the original D35 wording — "`total` = all mutants except `NON_VIABLE`,
+matching PIT's own denominator" — was **factually wrong**; PIT declares
+`NON_VIABLE(true)` and counts it in both numerator and denominator. Fixed in D36.)*
 
 **4. The gate genuinely bites — proven, not hard-coded.** The non-toy fixture
 (`test/fixtures/sixpack-mut`) ships a **genuine miniature mutation runtime** that
@@ -1268,6 +1271,49 @@ run end-to-end for both the green (strong) and red (weak) variants plus the tamp
 and opt-in negatives. Per the standing separation that kept every prior milestone
 sound, D35 goes to a fresh **external** (Codex) adversarial audit against its own
 criteria — not self-review.
+
+## D36 — Correcting the mutation score to PIT's real denominator + fail-closed on off-schema reports (2026-07-21, m7 follow-up)
+
+An external review of D35 found two objective divergences in
+`bin/parse-mutation-report.bb` between the *claimed* "faithful to PIT's score"
+contract and the actual behavior. Both are corrected here; the D35 design intent
+(recognize PIT's real score, fail closed on a bad report) is **unchanged** — D35 got
+the *arithmetic* wrong, and this note records the fix (per CLAUDE.md: a design/reality
+clash is corrected with a decision note, never silently ignored).
+
+**1. The denominator now reproduces PIT's score (was: wrong).** D35 excluded every
+`NON_VIABLE` mutant from `total`, on the belief that "PIT itself excludes it." That is
+false. PIT declares `NON_VIABLE(true)` in `DetectionStatus` — `isDetected()==true` —
+and its score is `getTotalDetectedMutations() / getTotalMutations()` over **all**
+mutants (`MutationStatistics`), so `NON_VIABLE` counts in **both** numerator and
+denominator. The old math could turn a run that satisfies PIT's own `mutationThreshold`
+**red** in the harness (e.g. `{SURVIVED, NON_VIABLE}` → PIT 50%, old harness 0%). The
+parser now counts `total` = every `<mutation>` and `killed` = every mutant whose status
+is a detected one (`KILLED`, `TIMED_OUT`, `MEMORY_ERROR`, `RUN_ERROR`, `NON_VIABLE`,
+`EQUIVALENT`); `SURVIVED`/`NO_COVERAGE` are the only not-detected terminal statuses.
+(`EQUIVALENT(true)` was also unhandled before.)
+
+**2. Genuinely fail-closed on an off-schema report (was: fail-open).** D35 required
+`detected` and `status` to be *present* but never cross-checked them, so a defective
+reporter could manufacture a false green: `detected='true' status='SURVIVED'` scored
+1/1, invented statuses (`EVERYTHING_IS_FINE`) and PIT in-flight states
+(`STARTED`/`NOT_STARTED`, i.e. an incomplete report) were accepted, and `<mutation>`
+nested anywhere in the tree counted (`xml-seq`). The parser now: (a) restricts `status`
+to the **closed set of terminal PIT statuses** (in-flight/invented → fail closed);
+(b) requires `detected` to **agree** with that status's canonical `isDetected()` value
+(self-contradictory → fail closed); (c) counts only `<mutation>` elements that are
+**direct children** of the `<mutations>` root. This widens the D30 boundary only
+marginally (a malicious same-user agent can already fabricate XML — unchanged), but it
+closes the gap where a *defective* reporter yields a false pass.
+
+**Scope.** Parser (`bin/parse-mutation-report.bb`) + its unit tests
+(`mutation-report-parser-reads-the-real-score` / `-fails-closed`) + docs
+(`mutation-report-schema.md`, `USAGE.md`, the D35 inline correction above). The
+runner/inspector verdict (`killed*100 >= threshold*total`, exact integer arithmetic),
+the MAC/tamper coverage, and the opt-in behavior are **unchanged** — the review
+confirmed those correct. The fixture (`test/fixtures/sixpack-mut/tools/mutation-run.sh`)
+already emits PIT-canonical `detected`/`status` pairs, so the "gate bites" proof is
+unchanged (weak = 1/7 RED, strong = 7/7 green).
 
 ## Known-flaky tests
 
