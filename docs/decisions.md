@@ -1506,6 +1506,42 @@ OS-isolation decline wholesale — not to bolt these three partial defenses onto
 accident boundary, which would deliver sandbox costs (broken Maven runs, an
 egress arms race) without a sandbox's guarantee.
 
+## D39 — Preflight usability and developer-first commit authorship (2026-07-22, m9)
+
+The next real myCQRS run must measure the workflow, not rediscover environment
+failures after paid agent turns. `bin/preflight` is therefore an additive,
+friendly mirror of existing preconditions. `craft-harness run`, `run-solo`, and
+`run-six` invoke it before installation/session creation or any agent turn. It
+reuses `bin/parse-project`, applies six-pack's existing mandatory `accept:` rule,
+checks every declared command entrypoint on the current environment's `PATH`
+(or as an executable project-relative path), rejects tracked dirty state, checks
+for unrelated in-flight work, and resolves commit authorship.
+
+Failures have stable, distinct exits and name the repair: in-flight `30`
+(doctor's established code), invalid/incomplete contract `41`, missing declared
+tool `42`, dirty tracked tree `43`, and inability to seed identity `44`. A
+six-pack contract declaring `network: none` on a host that cannot create an
+unprivileged network namespace is a contract this environment cannot honor, so
+preflight refuses it fail-closed with `41` before any state exists; run-six's
+own D38 namespace gate is byte-for-byte unchanged behind it. These
+are usability diagnostics, not new verdicts: the runners retain their original
+contract parsing, clean-tree checks, candidate ancestry/scope enforcement,
+runner-owned commands, report parsing, inspection, R6, and D38 controls.
+
+Authorship follows Git's normal resolution order. If both `user.name` and
+`user.email` already resolve locally or globally, preflight leaves them
+untouched and the agent's candidate commit uses the developer's identity. Only
+when either value is absent does preflight seed the D23 fallback
+`craft-harness <noreply@craft-harness.local>` repo-locally, before specify. This
+moves D23's fallback earlier without making it the default or rewriting commits.
+
+Fixture-first tests cover malformed/incomplete contract, missing tool, dirty
+tree, in-flight state, successful early fallback seeding, attributed seeding
+failure, six-pack completeness, a runner-level missing-tool refusal before any
+phase state/candidate, and a completed candidate authored by a configured
+developer. The shared preflight is the only new mechanism; runner hooks are
+small additive calls and the sealed gate bodies are unchanged.
+
 ## Known-flaky tests
 
 - `stop-handoff-daemon-stops-running-process-and-removes-pid-file` (upstream,

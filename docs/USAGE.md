@@ -137,6 +137,14 @@ restricted at the adapter tool layer instead (D38).
 The parser ignores ordinary prose outside these fields. The harness does not
 infer commands from Maven, Gradle, npm, or the source tree.
 
+Before installation or any agent turn, the D39 preflight reuses this parser,
+checks that each declared command's entrypoint is executable on the current
+WSL `PATH` (or is an executable project-relative file), rejects tracked working-
+tree changes and in-flight work, and resolves the Git commit identity. Failures
+are distinct: in-flight `30`, contract `41`, missing tool `42`, dirty tree `43`,
+and identity seeding `44`. These checks are an early usability mirror; the
+runner's existing contract, scope, command, and inspection gates still execute.
+
 The `owns:` set must include every path the candidate is allowed to add or
 change, including tests, executable features, and step handlers. The runner
 rejects the complete baseline-to-candidate diff before verification if any path

@@ -1,3 +1,32 @@
+# m9 — preflight usability + developer commit authorship
+
+This milestone closes two usability gaps before the next real myCQRS run. It is
+additive: no sealed/CLOSED verdict gate is replaced or weakened.
+
+## Exit criteria
+
+- `craft-harness run`, `run-solo`, and `run-six` validate the selected pack's
+  project contract, declared command entrypoints, tracked-tree cleanliness, Git
+  identity, and in-flight state before any agent turn.
+- Failures are actionable and distinct: in-flight `30`, contract `41`, missing
+  tool `42`, dirty tracked tree `43`, identity seeding `44`.
+- An absent Git identity is seeded repo-locally before the first phase; a
+  resolved local or global developer identity is preserved and authors the
+  candidate commit.
+- Fixture-first tests prove each preflight failure occurs before phase state or
+  a candidate is created, plus the configured-authorship case.
+- D39 records the usability boundary. Full `bb test` is green in WSL.
+
+## Non-goals
+
+No changes to candidate scope, command verdicts, acceptance/mutation parsing,
+R6, network namespacing, adapter permissions, or other sealed security controls.
+
+## Previous milestone
+
+m8 is complete and recorded in D38. Its final milestone text follows for
+historical context.
+
 # m8 — cheap security hardening (v0.2-lite)
 
 m7 is complete (D32–D37: executable Gherkin, fail-closed acceptance/mutation
