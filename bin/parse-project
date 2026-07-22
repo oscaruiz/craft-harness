@@ -16,6 +16,7 @@ file="${1:-}"
 
 owns_seen=0; owns_count=0; quality_seen=0; quality_count=0; test_seen=0; test_cmd=""
 accept_seen=0; accept_cmd=""
+network_seen=0
 mutation_seen=0; mut_tool=""; mut_threshold=""; mut_command=""
 mode=""
 declare -a owns=() quality_names=() quality_cmds=()
@@ -88,6 +89,21 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     mutation_seen=1; mode="mutation"; continue
   fi
   [[ ! "$line" =~ ^mutation: ]] || die "mutation: must start a block"
+  # `network:` (m8/D38): OPTIONAL, single-line, and 'none' is the only value —
+  # the only egress mode cheaply enforceable without root (an unprivileged
+  # no-network namespace around the runner-owned gate commands). A host-level
+  # allowlist would need the declined OS-isolation tier, so it is rejected here
+  # rather than accepted-and-ignored.
+  if [[ "$line" =~ ^network:[[:space:]]+(.+)$ ]]; then
+    (( network_seen == 0 )) || die "duplicate network: declaration"
+    network_seen=1
+    network_val="${BASH_REMATCH[1]}"
+    network_val="${network_val%"${network_val##*[![:space:]]}"}"
+    [[ "$network_val" == "none" ]] \
+      || die "network: value must be 'none' (the only enforceable mode; see D38): '$network_val'"
+    continue
+  fi
+  [[ ! "$line" =~ ^network: ]] || die "network: must be 'network: none'"
 done < "$file"
 
 (( owns_seen == 1 && owns_count > 0 )) || die "required owns: block is missing or empty"
@@ -106,4 +122,5 @@ for ((i=0; i<${#quality_names[@]}; i++)); do
   printf 'QUALITY\t%s\t%s\n' "${quality_names[$i]}" "${quality_cmds[$i]}"
 done
 if (( accept_seen == 1 )); then printf 'ACCEPT\t%s\n' "$accept_cmd"; fi
+if (( network_seen == 1 )); then printf 'NETWORK\tnone\n'; fi
 if (( mutation_seen == 1 )); then printf 'MUTATION\t%s\t%s\t%s\n' "$mut_tool" "$mut_threshold" "$mut_command"; fi

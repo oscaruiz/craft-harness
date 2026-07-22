@@ -144,3 +144,33 @@
                 "owns:\n  a\ntest: t\nmutation:\n  tool: pit est\n  threshold: 80\n  command: m\n"]]
     (let [r (parse-text text)]
       (is (not (zero? (:exit r))) (str "must reject:\n" text)))))
+
+;; --- m8/D38: the optional `network:` gate-egress key ---------------------------
+;; Additive: `network: none` declares that the RUNNER-OWNED gate commands
+;; (test/quality/accept/mutation) need no network and must run inside an
+;; unprivileged no-network namespace. 'none' is the only value — the only mode
+;; cheaply enforceable on WSL without root; a host allowlist is the declined
+;; OS-isolation tier (D38). run-solo ignores the record; run-six enforces it.
+
+(deftest network-none-emits-a-network-record
+  (let [r (parse-text (str "owns:\n  core/**\n"
+                           "test: bash run-unit.sh\n"
+                           "accept: bash acceptance/run.sh\n"
+                           "network: none\n"))]
+    (is (zero? (:exit r)) (:err r))
+    (is (= ["OWN\tcore/**"
+            "TEST\tbash run-unit.sh"
+            "ACCEPT\tbash acceptance/run.sh"
+            "NETWORK\tnone"]
+           (str/split-lines (:out r))))))
+
+(deftest malformed-network-fails-closed
+  (doseq [text [;; any value other than the enforceable 'none'
+                "owns:\n  a\ntest: t\nnetwork: full\n"
+                "owns:\n  a\ntest: t\nnetwork: allowlist api.example.com\n"
+                ;; empty value
+                "owns:\n  a\ntest: t\nnetwork:\n"
+                ;; duplicate declaration
+                "owns:\n  a\ntest: t\nnetwork: none\nnetwork: none\n"]]
+    (let [r (parse-text text)]
+      (is (not (zero? (:exit r))) (str "must reject:\n" text)))))

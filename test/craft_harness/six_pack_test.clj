@@ -150,6 +150,49 @@
     (approve! project (approval-token r1))
     (run-six! project variant)))
 
+(defn run-six-env!
+  "run-six! with extra environment entries merged in (e.g. a shimmed PATH)."
+  [project variant extra-env]
+  (let [r (sh/sh "bash" run-six
+                 "--project" (str project)
+                 "--adapter" (str (fs/path fixtures variant))
+                 "--pack" "six-pack"
+                 :env (merge {"PATH" (System/getenv "PATH")
+                              "HOME" (str (tmp-dir))
+                              "GIT_CONFIG_NOSYSTEM" "1"
+                              "CRAFT_HARNESS_PRIVATE_STATE" (private-state-root project)}
+                             extra-env))]
+    (assoc r :all (str (:out r) (:err r)))))
+
+(defn enable-network-none!
+  "Declare `network: none` in the fixture's contract and add a `netcheck`
+   quality gate. :must-block (default) PASSES only when egress is blocked —
+   the enforcement proof; :must-reach PASSES only when egress works — the
+   red-path proof that a network-needing gate fails under network: none."
+  [project & [probe]]
+  (let [pp (fs/path project "project.prompt")
+        text (slurp (str pp))
+        text (str/replace-first text "quality:\n" "quality:\n  netcheck: bash tools/net-check.sh\n")
+        text (str text "network: none\n")
+        script (if (= probe :must-reach)
+                 (str "#!/usr/bin/env bash\n"
+                      "# Gate probe: PASSES only when egress works.\n"
+                      "if timeout 2 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then exit 0; fi\n"
+                      "echo 'needed the network but egress is blocked' >&2\n"
+                      "exit 1\n")
+                 (str "#!/usr/bin/env bash\n"
+                      "# Gate probe: PASSES only when egress is BLOCKED (proves the namespace is real).\n"
+                      "if timeout 2 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then\n"
+                      "  echo 'egress NOT blocked: reached 1.1.1.1:443' >&2\n"
+                      "  exit 1\n"
+                      "fi\n"
+                      "exit 0\n"))]
+    (spit (str pp) text)
+    (spit (str (fs/path project "tools" "net-check.sh")) script)
+    (git! project "add" "project.prompt" "tools/net-check.sh")
+    (git! project "-c" "user.name=Setup" "-c" "user.email=setup@example.invalid"
+          "commit" "-q" "-m" "declare network: none + netcheck gate")))
+
 (defn parse-report [records]
   (let [report (fs/path (tmp-dir) "accept-report.ndjson")]
     (spit (str report) (str (str/join "\n" records) "\n"))
@@ -325,6 +368,41 @@
       (let [prompt (seeded-prompt p "qa")]
         (is (= "ACCEPT_CMD: bash acceptance/run-acceptance.sh" (prompt-line prompt "ACCEPT_CMD:")))
         (is (not (re-find #"(?i)\./test\.sh|\bsut\.sh\b" prompt)))))))
+
+;; --- gate egress (m8/D38): network: none runs gates in a no-network namespace --
+
+(deftest network-none-gates-run-inside-a-no-network-namespace
+  (testing "the netcheck gate PASSES only when egress is blocked; a green run therefore proves the runner really executed the gates without network"
+    (let [p (make-sixpack-project!)]
+      (enable-network-none! p)
+      (let [r2 (approve-and-resume! p "happy")]
+        (is (zero? (:exit r2)) (str "the network-free run must be green:\n" (:all r2)))
+        (is (= "done" (status p)))
+        (is (str/includes? (slurp (str (fs/path (state p) "commands.tsv"))) "quality:netcheck")
+            "the netcheck gate must have been runner-executed and recorded")))))
+
+(deftest network-none-turns-a-network-needing-gate-red
+  (testing "a gate that requires egress fails under network: none, attributed to the declared command"
+    (let [p (make-sixpack-project!)]
+      (enable-network-none! p :must-reach)
+      (let [r2 (approve-and-resume! p "happy")]
+        (is (not (zero? (:exit r2))) "a network-needing gate must turn the run red")
+        (is (re-find #"netcheck" (:all r2)) "attributed to the offending quality gate")
+        (is (= "failed" (status p)))))))
+
+(deftest network-none-fails-closed-when-namespaces-are-unavailable
+  (testing "a host that cannot create an unprivileged network namespace must refuse the run outright — never silently run the gates with live egress"
+    (let [p (make-sixpack-project!)
+          shim-bin (fs/path (tmp-dir) "bin")]
+      (enable-network-none! p)
+      (fs/create-dirs shim-bin)
+      (spit (str (fs/path shim-bin "unshare")) "#!/usr/bin/env bash\nexit 1\n")
+      (sh-run {:dir shim-bin} "chmod" "+x" (str (fs/path shim-bin "unshare")))
+      (let [r (run-six-env! p "happy" {"PATH" (str shim-bin ":" (System/getenv "PATH"))})]
+        (is (not (zero? (:exit r))))
+        (is (re-find #"network: none" (:all r)))
+        (is (re-find #"(?i)fail-closed" (:all r)))
+        (is (not (fs/exists? (state p))) "refused before any phase ran")))))
 
 ;; --- task input is DATA: the human R6 gate is the injection firewall (D38) ---
 

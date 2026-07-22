@@ -78,7 +78,7 @@ CONTRACT_PARSER="$FORK_ROOT/bin/parse-project"
 CONTRACT_OUT="$(bash "$CONTRACT_PARSER" "$PROJECT/project.prompt" 2>&1)" \
   || die "invalid project contract — $CONTRACT_OUT"
 declare -a PROJECT_OWNS=() QUALITY_NAMES=() QUALITY_COMMANDS=()
-PROJECT_TEST_CMD=""; PROJECT_ACCEPT_CMD=""
+PROJECT_TEST_CMD=""; PROJECT_ACCEPT_CMD=""; PROJECT_NETWORK=""
 MUT_DECLARED=0; MUT_TOOL=""; MUT_THRESHOLD=""; MUT_COMMAND=""
 while IFS=$'\t' read -r kind a b c; do
   case "$kind" in
@@ -86,6 +86,7 @@ while IFS=$'\t' read -r kind a b c; do
     TEST) PROJECT_TEST_CMD="$a" ;;
     QUALITY) QUALITY_NAMES+=("$a"); QUALITY_COMMANDS+=("$b") ;;
     ACCEPT) PROJECT_ACCEPT_CMD="$a" ;;
+    NETWORK) PROJECT_NETWORK="$a" ;;
     MUTATION) MUT_DECLARED=1; MUT_TOOL="$a"; MUT_THRESHOLD="$b"; MUT_COMMAND="$c" ;;
   esac
 done <<< "$CONTRACT_OUT"
@@ -98,6 +99,21 @@ done <<< "$CONTRACT_OUT"
 if (( MUT_DECLARED )); then
   [[ "$MUT_TOOL" == "pitest" ]] \
     || die "invalid project contract — mutation tool '$MUT_TOOL' is not supported (only 'pitest' for now)"
+fi
+# Gate egress (m8/D38, opt-in): 'network: none' declares that the RUNNER-OWNED
+# gate commands (test/quality/accept/mutation) need no network; each is then
+# executed inside an UNPRIVILEGED no-network namespace (unshare -rn: loopback
+# only, no egress). Fail-closed: a host that cannot create one refuses the run
+# rather than silently running the gates with live egress. Agent PHASES are
+# never wrapped — the agent CLI needs its API endpoint; their egress control is
+# the adapter's tool allowlist (D38). A per-host allowlist (Maven Central only,
+# etc.) is NOT enforceable without the declined OS-isolation tier and is
+# rejected by the contract parser, never faked here.
+NETNS_WRAP=()
+if [[ "$PROJECT_NETWORK" == "none" ]]; then
+  unshare -rn true 2>/dev/null \
+    || die "project declares 'network: none' but this host cannot create an unprivileged network namespace (unshare -rn failed) — refusing to run the gates with live egress (fail-closed)"
+  NETNS_WRAP=(unshare -rn)
 fi
 
 git -C "$PROJECT" diff --quiet && git -C "$PROJECT" diff --cached --quiet \
@@ -371,8 +387,12 @@ run_project_command() { # <label> <command> <workdir>
   safe="${label//:/-}"
   start="$(date +%s)"
   set_status "running_$safe"
+  # ${NETNS_WRAP[@]+...}: no-network namespace when 'network: none' (D38); the
+  # lo-up is a namespace nicety (loopback servers keep working) and a silent
+  # no-op outside one. Empty-array form stays legal under bash 3.2 set -u.
   bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
-    bash -c 'cd "$1" && exec bash -c "$2"' _ "$wd" "$command" \
+    ${NETNS_WRAP[@]+"${NETNS_WRAP[@]}"} \
+    bash -c 'ip link set lo up 2>/dev/null || true; cd "$1" && exec bash -c "$2"' _ "$wd" "$command" \
     > "$LOGS/command-$safe.log" 2>&1 || rc=$?
   duration=$(( $(date +%s) - start ))
   printf '%s\t%s\t%s\t%s\n' "$label" "$duration" "$rc" "$command" >> "$COMMANDS_TSV"
@@ -394,7 +414,8 @@ run_accept_command() { # <workdir>
   set_status "running_accept"
   CRAFT_ACCEPT_REPORT="$ACCEPT_REPORT" \
     bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
-    bash -c 'cd "$1" && CRAFT_ACCEPT_REPORT="$3" exec bash -c "$2"' _ "$wd" "$PROJECT_ACCEPT_CMD" "$ACCEPT_REPORT" \
+    ${NETNS_WRAP[@]+"${NETNS_WRAP[@]}"} \
+    bash -c 'ip link set lo up 2>/dev/null || true; cd "$1" && CRAFT_ACCEPT_REPORT="$3" exec bash -c "$2"' _ "$wd" "$PROJECT_ACCEPT_CMD" "$ACCEPT_REPORT" \
     > "$LOGS/command-accept.log" 2>&1 || rc=$?
   duration=$(( $(date +%s) - start ))
   printf '%s\t%s\t%s\t%s\n' "accept" "$duration" "$rc" "$PROJECT_ACCEPT_CMD" >> "$COMMANDS_TSV"
@@ -441,7 +462,8 @@ run_mutation_command() { # <workdir>
   set_status "running_mutation"
   CRAFT_MUTATION_REPORT="$MUTATION_REPORT" \
     bash "$FORK_ROOT/adapters/run-with-timeout" "$COMMAND_TIMEOUT" -- \
-    bash -c 'cd "$1" && CRAFT_MUTATION_REPORT="$3" exec bash -c "$2"' _ "$wd" "$MUT_COMMAND" "$MUTATION_REPORT" \
+    ${NETNS_WRAP[@]+"${NETNS_WRAP[@]}"} \
+    bash -c 'ip link set lo up 2>/dev/null || true; cd "$1" && CRAFT_MUTATION_REPORT="$3" exec bash -c "$2"' _ "$wd" "$MUT_COMMAND" "$MUTATION_REPORT" \
     > "$LOGS/command-mutation.log" 2>&1 || rc=$?
   duration=$(( $(date +%s) - start ))
   printf '%s\t%s\t%s\t%s\n' "mutation" "$duration" "$rc" "$MUT_COMMAND" >> "$COMMANDS_TSV"
