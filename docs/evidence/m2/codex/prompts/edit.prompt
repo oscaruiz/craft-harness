@@ -1,0 +1,4 @@
+PHASE: edit
+
+Read task.md in this repository and apply the change it describes to sut.sh.
+Do not run tests and do not commit in this phase.

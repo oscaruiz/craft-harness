@@ -1,0 +1,16 @@
+{
+  "adapter" : "codex",
+  "phase_timeout_s" : 1200,
+  "failed_phase" : "edit",
+  "failure" : "invoke_failed",
+  "adapter_info" : "codex codex-cli 0.144.6",
+  "outcome" : "failed",
+  "phases" : [ {
+    "name" : "edit",
+    "duration_s" : 0,
+    "outcome" : "invoke_failed"
+  } ],
+  "baseline_commit" : "a98a8c74f259807dd5ac0feec2e7e179086b9a13",
+  "workdir" : "docs/evidence/m2/codex/workdir",
+  "fork_commit" : "3e577d2ca3dcf8fcad2b8b0c92b185560d77faec"
+}

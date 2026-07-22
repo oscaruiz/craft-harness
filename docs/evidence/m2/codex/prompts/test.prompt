@@ -1,0 +1,3 @@
+PHASE: test
+
+Run ./test.sh in this repository. If it fails, fix sut.sh until it passes.

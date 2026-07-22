@@ -1,0 +1,5 @@
+PHASE: handoff
+
+Queue a git_handoff to the role 'verifier' for task 'toy-task', referencing
+the commit you just created. The handoff must end up as a .handoff file in
+.swarmforge/handoffs/outbox/ (SWARMFORGE_ROLE is set to 'coder').

@@ -1,0 +1,60 @@
+Verdict: m7 is sound against “fixtures-mirror-the-toy blindness”; the pattern did not reappear, although duplicate/conflicting acceptance-report records remain a fail-open validation gap.
+
+## Findings
+
+1. Medium — Acceptance-report duplicates are accepted — PARTIAL
+
+The parser validates JSON structure, non-empty scenario names, and known statuses, but does not reject duplicate scenario IDs or enforce the documented ID grammar ([bin/parse-accept-report.bb](D:/Dev/craft-harness/bin/parse-accept-report.bb:24), [bin/parse-accept-report.bb](D:/Dev/craft-harness/bin/parse-accept-report.bb:29)). `run-six` then records a scenario as passed if any record for that ID says `passed` ([bin/run-six](D:/Dev/craft-harness/bin/run-six:384)). Consequently:
+
+```json
+{"scenario":"SUT-1","status":"failed"}
+{"scenario":"SUT-1","status":"passed"}
+```
+
+passes the gate, as does the reverse order. `inspect-run` repeats the same existential logic ([bin/inspect-run](D:/Dev/craft-harness/bin/inspect-run:129)). This is structural rather than substring-based, but it is not fully fail-closed for malformed or internally contradictory reports. There is no negative test for duplicate report records.
+
+This does not make the fixture green by fiat, but a real acceptance adapter emitting retries or duplicate results could conceal a failure.
+
+2. Executable-Gherkin gate — CLOSED, subject to the duplicate-record gap above
+
+The runner executes the declared `accept:` command itself, under timeout, in the clean final-candidate worktree, and supplies a runner-owned report path ([bin/run-six](D:/Dev/craft-harness/bin/run-six:359), [bin/run-six](D:/Dev/craft-harness/bin/run-six:517)). Non-zero exit and timeout are fatal ([bin/run-six](D:/Dev/craft-harness/bin/run-six:370)). Approved IDs are snapshotted before approval ([bin/run-six](D:/Dev/craft-harness/bin/run-six:416)), and missing/non-passed IDs fail structurally after parsing ([bin/run-six](D:/Dev/craft-harness/bin/run-six:376)).
+
+The fixture runtime genuinely parses feature files, accumulates their steps, and invokes candidate-provided `run_step` handlers ([run-acceptance.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/acceptance/run-acceptance.sh:33), [run-acceptance.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/acceptance/run-acceptance.sh:50)). Unknown steps return `2` in the candidate handler ([sixpack-invoke](D:/Dev/craft-harness/test/fixtures/sixpack-agent/sixpack-invoke:94)), which the runtime converts to `undefined` ([run-acceptance.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/acceptance/run-acceptance.sh:40)).
+
+The planted SUT-3 scenario contains an unmatched step ([sixpack-invoke](D:/Dev/craft-harness/test/fixtures/sixpack-agent/sixpack-invoke:72)). Its redness therefore comes from genuine dispatch and undefined-step detection, not a hardcoded result. The test verifies that SUT-3 was approved and that the completed run is red ([six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:181)).
+
+3. Non-toy fixture — CLOSED
+
+The fixture has two behavioral modules: `web` invokes the public `core/api.sh`, which delegates to a private implementation ([sixpack-invoke](D:/Dev/craft-harness/test/fixtures/sixpack-agent/sixpack-invoke:83)). Unit tests execute both module boundaries and assert exact outputs ([run-unit.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/run-unit.sh:6)).
+
+The architecture gate detects direct `web → core/lib.sh` coupling and exits non-zero ([arch-check.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/tools/arch-check.sh:7)); the planted violation preserves observable output while violating that boundary ([sixpack-invoke](D:/Dev/craft-harness/test/fixtures/sixpack-agent/sixpack-invoke:87)). The duplication gate performs actual pairwise byte comparison rather than returning unconditional green ([dup-check.sh](D:/Dev/craft-harness/test/fixtures/sixpack/template/tools/dup-check.sh:6)).
+
+Declared commands are injected as exact prompt lines in tests ([six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:241)), and the runner executes the literal contract commands and records them ([bin/run-six](D:/Dev/craft-harness/bin/run-six:338)). The fixture’s `harden` agent is advisory/no-op, but its architecture and duplication verdicts are independently runner-executed afterward ([sixpack-invoke](D:/Dev/craft-harness/test/fixtures/sixpack-agent/sixpack-invoke:139), [bin/run-six](D:/Dev/craft-harness/bin/run-six:513)); it is therefore not a rubber stamp.
+
+4. Reuse of run-solo’s sound controls — CLOSED
+
+`run-six` reimplements the controls but retains their essential properties:
+
+- Candidate ancestry, enforced branch, advancement, and owned-path scope: [bin/run-six](D:/Dev/craft-harness/bin/run-six:445), [bin/run-six](D:/Dev/craft-harness/bin/run-six:462).
+- Independent QA in a detached candidate worktree, with mutation detection: [bin/run-six](D:/Dev/craft-harness/bin/run-six:492).
+- Runner-executed test and ordered quality commands against the final candidate: [bin/run-six](D:/Dev/craft-harness/bin/run-six:513).
+- Authenticated command, acceptance-report, and approval-snapshot evidence: [bin/run-six](D:/Dev/craft-harness/bin/run-six:169), independently checked at [bin/inspect-run](D:/Dev/craft-harness/bin/inspect-run:77).
+- Tests plant out-of-scope commits and QA mutation and require red outcomes: [six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:219), [six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:230).
+
+`git diff 069f61f..HEAD -- bin/run-solo` is empty: `run-solo` is byte-for-byte untouched by m7.
+
+5. `accept:` contract — CLOSED
+
+`parse-project` permits at most one non-empty, space-delimited, tab-free `accept:` declaration and rejects duplicate or malformed forms ([bin/parse-project](D:/Dev/craft-harness/bin/parse-project:61)). Contract tests cover duplicate, empty, and missing-space forms ([project_contract_test.clj](D:/Dev/craft-harness/test/craft_harness/project_contract_test.clj:69)).
+
+`run-six` requires the emitted acceptance command before creating session state ([bin/run-six](D:/Dev/craft-harness/bin/run-six:73), [six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:255)). `run-solo` ignores the additive `ACCEPT` record because its contract-reader case has no `ACCEPT` branch; optionality and backward compatibility are tested at [project_contract_test.clj](D:/Dev/craft-harness/test/craft_harness/project_contract_test.clj:62).
+
+6. D29/D30 boundaries — CLOSED
+
+m7 claims command execution and scenario-result traceability, not semantic completeness or protection against a malicious same-user agent. The retained report and approved snapshot are authenticated with runner-private evidence ([bin/run-six](D:/Dev/craft-harness/bin/run-six:169)), and post-run report tampering is tested ([six_pack_test.clj](D:/Dev/craft-harness/test/craft_harness/six_pack_test.clj:266)).
+
+Candidate step code can still return success without meaningfully testing behavior or interfere with same-user-accessible state. That is consistent with the expressly limited threat model, not a reintroduced forgery-proof or semantic-coverage claim.
+
+## Most important missing executable enforcement
+
+Acceptance-report uniqueness and consistency: the parser should reject duplicate scenario IDs—especially conflicting statuses—and validate IDs against the approved `@[A-Z][A-Z0-9]*-[0-9]+` grammar. Beyond that actionable gap, semantic adequacy of the approved scenarios remains intentionally outside the executable claim.
