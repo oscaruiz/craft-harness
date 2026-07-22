@@ -1,89 +1,56 @@
-# m7 — the six-pack: full domain pipeline with executable Gherkin (v0.2)
+# m8 — cheap security hardening (v0.2-lite)
 
-v0.1 is complete and sealed (D28–D31): `solo-pack` is the one supported light
-path, project gates are runner-owned (the runner executes the declared `test:`
-and ordered `quality:` commands itself in a fresh candidate worktree, authenticates
-`commands.tsv`, and prints `SUCCESS` only after `inspect-run` passes), and the
-honest boundaries are documented — no semantic-coverage promise (D29), no
-malicious-forgery-proof claim (D30). The prior milestone doc is preserved in git
-history; this file now tracks the active milestone, m7.
+m7 is complete (D32–D37: executable Gherkin, fail-closed acceptance/mutation
+evidence, external audit remediations); its milestone doc is preserved in git
+history. This milestone is the proportional response to the REAL threat model
+the external Codex audit identified — after the full OS-sandbox tier was ruled
+over-engineering for solo use. Three bounded controls, recorded as **D38**:
+each is either cheaply enforceable (then built TDD with a negative test proving
+the control) or honestly declined (documented, never half-built — a security
+theater control is worse than an honest "not enforced here").
 
-## Goal
+## The three controls
 
-Deliver the `six-pack`: a fuller domain pipeline with four **runner-enforced**
-roles and the defining new control — **executable Gherkin**. Where solo-pack's
-Gherkin is *documental* (a verifier reads `.feature` files and asserts each `@ID`
-is "satisfied" — advisory by design, D29), six-pack's Gherkin must **actually run**
-and the runner must **verify it ran**: every human-approved scenario ID must appear
-**passed** in a machine-readable acceptance report the runner produces itself. This
-is the one place traceability stops being advisory and becomes an executable gate.
+1. **Task input is untrusted (prompt injection — the highest real risk).**
+   The human R6 gate is the injection firewall and must be provably immune to
+   injected "approval" text: the token is minted after the specify turn, never
+   enters a phase prompt/environment, a planted `APPROVED` is discarded at gate
+   time, and the negative test drives a specifier that OBEYED an injected
+   approval payload (self-consistent `APPROVED`+`token.sha256` pair) — the run
+   still pauses and only the genuine human path proceeds. Prompt-side
+   data-not-instructions contract lines are defense-in-depth only, asserted
+   exact-line (D22 coda), never counted as a control (CLAUDE.md hard rule).
 
-The build is governed by the project's most productive defect class,
-**"fixtures-mirror-the-toy blindness"** (D20/D21/D22/D23/D27): the non-toy,
-multi-module fixture is built **first, in red**, and every gate is proven against
-it. A planted **unimplemented scenario** MUST turn the run red.
+2. **Scoped permission allowlist replaces `--dangerously-skip-permissions`.**
+   Without breaking real runs: skip-all existed because headless turns cannot
+   answer permission prompts (D23; the D11/D12/D13 hang class). The adapter now
+   allowlists exactly Edit/Write, `Bash(git:*)`, and the declared
+   `test:`/`quality:`/`accept:`/`mutation:` commands (structurally parsed from
+   the workdir contract; no blanket first-token rules), grants the runner
+   session dir via `--add-dir` for worktree phases, and denies
+   WebFetch/WebSearch. Validated against the installed CLI: real turn completes,
+   non-allowlisted commands are denied cleanly (no hang), allowlisted ones run.
 
-## Phases and runner-enforced exit criteria
+3. **Network egress restricted to the enforceable slice.** Investigated on the
+   real WSL host: unprivileged `unshare -rn` works; selective per-host
+   allowlisting does not exist below the declined OS-isolation tier — so it is
+   declined, not faked. Enforced instead: phase egress at the adapter tool
+   layer (control 2), and an opt-in `network: none` contract key that makes
+   `run-six` execute every runner-owned gate command inside a no-network
+   namespace, fail-closed on hosts that cannot create one.
 
-Sequence `specify → code → harden → qa` (asserted against the pack conf, exactly
-as `run-solo` asserts its solo sequence).
+## Exit criteria (met)
 
-- **specify** (specifier): writes spec + executable `@ID`-tagged `.feature` files,
-  then pauses at the R6 human token gate. Runner-enforced: features parse and yield
-  ≥1 tagged scenario; the approved scenario IDs are snapshotted at the gate as the
-  executable-traceability contract.
-- **code** (coder): implements the impl + acceptance features + step handlers and
-  commits the candidate on the enforced branch. Runner-enforced: candidate ≠
-  baseline, descends baseline, on branch, owned-scope clean; the runner runs the
-  declared `test:` command green.
-- **harden** (hardener): quality/cleanup within owns (may advance the candidate;
-  cleaner is folded in here). Runner-enforced: re-scoped + `test:` still green; the
-  runner runs the ordered `quality:` commands green — including the **architecture**
-  command (the architect role's runner-enforced criterion).
-- **qa** (QA): independent verifier in a clean worktree at the final candidate.
-  Runner-enforced: the worktree is unmutated, and the runner runs the declared
-  `accept:` command **itself** and enforces that every approved scenario ID appears
-  `passed` in the report (the executable-Gherkin gate).
-
-## Honest boundaries (carried from D29/D30, not re-litigated)
-
-- The claim is "the approved scenarios executed and passed against the candidate",
-  never semantic coverage of the domain (D29).
-- The runner executes `accept:`/`test:`/`quality:` itself and acts on the live
-  process exit status (D30's one surviving adversarial guarantee). Retained report
-  and command evidence is accidental-tamper-evident only, not forgery-proof against
-  a malicious same-user agent (D30).
-
-## Documented degradation (design §5/§7.7/§8 already carve these out)
-
-- **No gherkin-mutator** (§5 "No Gherkin mutation in v0.1", carried into m7).
-- **No Playwright-UI automation**; `accept:` is language/UI-agnostic and a TS
-  project can later declare a Playwright-emitting `accept:` command.
-- Single primary candidate: harden may advance it; architect/cleaner are not
-  separate committing phases. Scenario *text* fidelity stays advisory (D29);
-  scenario *execution + pass of approved IDs* is enforced.
-
-## Exit criteria
-
-- The non-toy multi-module fixture is built first and every gate is proven against
-  it; no six-pack test could pass against the sut.sh/42 toy.
-- A planted **unimplemented scenario** (approved `@ID`, no step handler) turns the
-  run **red** at the accept gate, attributed and naming the scenario ID; a
-  **dropped** approved scenario (absent from the report) turns it red too.
-- A planted **architecture violation** turns the run red at the harden gate;
-  out-of-scope commits and a verifier that mutates its worktree turn it red.
-- The happy path runs `specify → gate → code → harden → qa → runner gates →
-  inspect → SUCCESS`, every approved scenario ID `passed` in the authenticated
-  report, `inspect-run` PASS.
-- Injection-contract tests assert the **exact** `TEST_CMD:` / `ACCEPT_CMD:` /
-  `HANDOFF_PATH:` lines (not substrings); each fake declared tool asserts its exact
-  args.
-- The fork `six-pack` branch is registered in `PACKS` and satisfies
-  `MANAGED_FILES.manifest` (`pack-manifest-test` covers it, D20).
-- Full `bb test` is green, including the sealed-v0.1 suites (regression guard for
-  any shared-helper extraction), apart from the named upstream flaky test.
-
-## After code-complete
-
-m7 goes to a fresh **external** (Codex) adversarial audit against its own criteria
-— not self-review — exactly the separation that made v0.1 sound.
+- Injected approval text in `task.md` cannot approve: negative e2e proves the
+  planted-pair worst case pauses, refuses to resume, and the human path still
+  works. Exact-line prompt-contract test across all four phases.
+- Adapter tests prove: no skip-all flag, exact declared-command allowlist
+  entries, no blanket rules, explicit WebFetch/WebSearch denial, `--add-dir`
+  only under runner env. Real-CLI smoke: flags accepted, clean denial, no hang.
+- `network: none`: green run proves gates executed with egress genuinely
+  blocked (a gate that fails when the network is reachable); a network-needing
+  gate turns the run red attributed; a host without namespaces refuses
+  fail-closed; the parser rejects every other `network:` value.
+- D38 records what was hardened and what was declined-as-too-costly.
+- Full `bb test` green in WSL; `run-solo` and all CLOSED/sealed gates
+  byte-for-byte untouched.

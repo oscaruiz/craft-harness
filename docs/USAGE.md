@@ -37,8 +37,11 @@ The adapter contract is CLI-neutral, but certification is not interchangeable:
 Claude Code is the only backend that completed the formal canonical scenario.
 Codex has a real adapter and has operated on this repository, but its formal
 WSL scenario remains blocked by the recorded Codex/WSL initialization failure
-(D8). The Claude adapter uses `--dangerously-skip-permissions`; read the D30
-boundary below before using it.
+(D8). The Claude adapter runs each headless turn under a scoped permission
+allowlist — file edits, `git`, and the project contract's declared commands,
+with `WebFetch`/`WebSearch` denied (D38); anything else is denied cleanly by
+the headless CLI. This contains carelessness, not malice — read the D30
+boundary below.
 
 Run this repository's suite from WSL:
 
@@ -94,6 +97,19 @@ project-declared `threshold` (0–100). The command is a **reporter** — let PI
 `tool: pitest` is supported today. See
 [mutation-report-schema.md](mutation-report-schema.md).
 
+`network: none` is an **opt-in** declaration (six-pack only; `run-solo` ignores
+it) that the runner-owned gate commands need no network. `run-six` then executes
+each declared `test:`/`quality:`/`accept:`/`mutation:` command inside an
+unprivileged no-network namespace (`unshare -rn`, loopback only) and refuses the
+whole run — fail-closed — on a host that cannot create one. Do not declare it if
+a gate genuinely needs egress (for example a Maven build that must fetch
+dependencies on first run: either pre-warm the local repository and run
+offline, or leave `network:` undeclared). `none` is the only value: a per-host
+allowlist is not enforceable without the OS-isolation tier that was declined
+(D38), so the parser rejects anything else rather than pretending. Agent phases
+are never wrapped — the agent CLI needs its API endpoint; phase egress is
+restricted at the adapter tool layer instead (D38).
+
 ### Strict fail-closed rules
 
 [`bin/parse-project`](../bin/parse-project) is authoritative:
@@ -112,6 +128,9 @@ project-declared `threshold` (0–100). The command is a **reporter** — let PI
   exactly `tool:`, `threshold:` (integer 0–100), and `command:`. Duplicate blocks,
   a missing/unknown/duplicate key, an out-of-range or non-numeric threshold, or an
   unsupported tool fail closed.
+- `network:` is optional (six-pack only). `none` is the only accepted value;
+  any other value (or a duplicate declaration) fails closed rather than being
+  accepted and silently unenforced.
 - Tabs are not allowed in command values because the durable command record is
   tab-separated.
 
@@ -267,6 +286,13 @@ The harness guarantees only what its runner can observe:
 - Verification ran in a fresh detached candidate worktree and did not modify it.
 - In six-pack, every human-approved scenario ID was structurally reported
   `passed` by the declared acceptance command.
+- Approval comes only from the human R6 gate: the token is minted after the
+  specify turn (clobbering anything a phase planted), never enters a phase
+  prompt or environment, and a planted `APPROVED` file is discarded at gate
+  time — injected "approval" text in `task.md` or any project file cannot
+  approve a spec (D38).
+- When `network: none` is declared, the runner-owned gate commands executed
+  inside an unprivileged no-network namespace, or the run refused to start.
 - When a `mutation:` gate is declared, the declared mutation command ran and its
   real PITest score (detected / all mutants — PIT's own denominator) met the
   project-declared threshold.
@@ -297,6 +323,16 @@ It does **not** guarantee the following:
   where the runner executes.
 - **Backend interchangeability.** The adapter architecture supports additional
   CLIs, but only Claude Code is formally scenario-certified today (D8).
+- **A network allowlist.** Phase egress is restricted at the adapter tool layer
+  (no `WebFetch`/`WebSearch`, no undeclared Bash commands), and gate egress can
+  be denied outright with `network: none` — but a *selective* per-host
+  allowlist ("only the API endpoint and Maven Central") is not enforceable
+  without root or the declined OS-isolation tier, and the harness does not
+  pretend otherwise (D38). A declared toolchain (`mvn`, a project script) can
+  still open any connection while it runs un-namespaced.
+- **Agent obedience to prompt text.** The untrusted-input contract lines in the
+  six-pack prompts are defense-in-depth, not a control; the executable
+  injection firewall is the human R6 gate above (D38).
 
 The process cost is intentional but not universally worthwhile. It is a good
 fit for bounded, contract-reviewable changes where independent verification and
