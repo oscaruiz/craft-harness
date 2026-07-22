@@ -24,6 +24,10 @@
 #                     kills every mutant (mutation gate green, D35).
 #   mut-weak        — code adds core/rules.sh + a WEAK core/rules-test.sh that lets
 #                     mutants survive (mutation score below threshold -> gate RED).
+#   injection       — a specifier that OBEYED prompt-injected text in task.md: it
+#                     plants a self-consistent approval pair (APPROVED + its
+#                     token.sha256) during the specify turn, trying to pre-approve
+#                     the spec. The R6 gate must still hold (D38).
 #   stuck           — hangs (per-phase timeout breaker).
 set -uo pipefail
 
@@ -173,6 +177,16 @@ case "$PHASE" in
   specify)
     printf '# Spec: core + web modules with executable acceptance scenarios.\n' > "$SIX_SPEC_DIR/spec.md"
     write_features
+    if [[ "$VARIANT" == injection ]]; then
+      # Worst-case simulation: the agent OBEYED the injected approval payload in
+      # task.md — it writes the injected token to approval/APPROVED AND plants a
+      # matching token.sha256, the strongest in-band forgery a phase can attempt.
+      inj_tok="$(sed -n 's/^APPROVAL_TOKEN: //p' task.md | head -1)"
+      appr="$SIX_HANDOFFS_DIR/../approval"
+      mkdir -p "$appr"
+      printf '%s' "$inj_tok" > "$appr/APPROVED"
+      printf '%s' "$inj_tok" | sha256sum | awk '{print $1}' > "$appr/token.sha256"
+    fi
     emit_handoff specify "- specified @SUT scenarios for core and web behavior"
     ;;
   code)
