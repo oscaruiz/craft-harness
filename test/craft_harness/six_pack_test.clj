@@ -386,8 +386,23 @@
                "<mutations><mutation detected='true' status='EVERYTHING_IS_FINE'/></mutations>" ; invented status
                "<mutations><mutation detected='false' status='STARTED'/></mutations>"      ; in-flight -> incomplete report
                "<mutations><mutation detected='false' status='NOT_STARTED'/></mutations>" ; in-flight -> incomplete report
-               "<mutations><wrapper><mutation detected='true' status='KILLED'/></wrapper></mutations>"]] ; nested, not a direct child
+               "<mutations><wrapper><mutation detected='true' status='KILLED'/></wrapper></mutations>" ; nested, not a direct child
+               ;; --- root ENVELOPE (D37): the <mutations> root itself must be on-schema ---
+               "<mutations partial='true'><mutation detected='true' status='KILLED'/></mutations>"   ; partial='true' -> PIT report is INCOMPLETE
+               "<mutations partial='maybe'><mutation detected='true' status='KILLED'/></mutations>"  ; garbage partial value (only false is a complete report)
+               "<mutations bogus='x'><mutation detected='true' status='KILLED'/></mutations>"        ; unexpected/invented root attribute
+               "<mutations><garbage/><mutation detected='true' status='KILLED'/></mutations>"        ; unexpected element smuggled in alongside a valid mutation
+               "<mutations><mutation detected='true' status='KILLED'/><junk>x</junk></mutations>"]]  ; trailing non-<mutation> direct child
     (is (not (zero? (:exit (parse-mut xml)))) (str "must reject: " xml))))
+
+(deftest mutation-report-parser-accepts-the-real-pit-envelope
+  (testing "PIT's real report shape is NOT falsely rejected: partial='false' root + whitespace between elements"
+    ;; The fixture and real PIT emit `<mutations partial="false">` pretty-printed with
+    ;; newlines between <mutation> elements. The envelope tightening (D37) must accept
+    ;; this verbatim -- the completed-report marker and inter-element whitespace pass.
+    (is (= "1\t2" (str/trim (:out (parse-mut "<mutations partial='false'>\n  <mutation detected='true' status='KILLED'/>\n  <mutation detected='false' status='SURVIVED'/>\n</mutations>")))))
+    ;; A bare <mutations> root with no attributes (older PIT) is still accepted.
+    (is (= "1\t1" (str/trim (:out (parse-mut "<mutations>\n  <mutation detected='true' status='KILLED'/>\n</mutations>")))))))
 
 (deftest mutation-gate-passes-when-tests-kill-the-mutants
   (let [p (make-sixpack-mut-project!)

@@ -1306,6 +1306,12 @@ to the **closed set of terminal PIT statuses** (in-flight/invented → fail clos
 marginally (a malicious same-user agent can already fabricate XML — unchanged), but it
 closes the gap where a *defective* reporter yields a false pass.
 
+*(Scope note: D36's fix hardened the mutation **records**. The `<mutations>` root
+**envelope** — an incomplete `partial='true'` report, unexpected root attributes, and
+non-`<mutation>` direct children — was still accepted; the heading above therefore
+overstated "off-schema report → fail closed". That envelope gap is closed in **D37**,
+after which the claim is accurate for the whole report.)*
+
 **Scope.** Parser (`bin/parse-mutation-report.bb`) + its unit tests
 (`mutation-report-parser-reads-the-real-score` / `-fails-closed`) + docs
 (`mutation-report-schema.md`, `USAGE.md`, the D35 inline correction above). The
@@ -1314,6 +1320,49 @@ the MAC/tamper coverage, and the opt-in behavior are **unchanged** — the revie
 confirmed those correct. The fixture (`test/fixtures/sixpack-mut/tools/mutation-run.sh`)
 already emits PIT-canonical `detected`/`status` pairs, so the "gate bites" proof is
 unchanged (weak = 1/7 RED, strong = 7/7 green).
+
+## D37 — Fail-closed on the mutation report ENVELOPE, not just the records (2026-07-22, m7 follow-up)
+
+A second external (Codex) audit of the mutation gate closed 7/8 findings and left one
+**PARTIAL**: `bin/parse-mutation-report.bb` was fail-closed on invalid mutation
+**records** (D36) but not on the whole report **envelope**. The `<mutations>` root was
+accepted regardless of its own attributes and stray content, so
+`<mutations partial='true'>` (PIT's marker for an **incomplete** report), an invented
+root attribute (`<mutations bogus='x'>`), and an unexpected non-`<mutation>` direct
+child (a `<garbage/>` smuggled in alongside real mutations) all passed. D36's heading
+"fail-closed on an off-schema report" therefore **overstated** what the parser did.
+The gap is narrow and not newly exploitable (a malicious same-user agent can already
+fabricate XML — the D30 boundary is unchanged), but it is the last link between the
+claim and the code, so it is closed here.
+
+**The fix (TDD, red-first).** The parser now validates the root envelope against PIT's
+**real** report shape before scoring:
+
+- **Root attribute.** PIT's completed report is `<mutations partial="false">` (older
+  PIT omits the attribute). The parser accepts `partial` only when it is `"false"` (or
+  absent); `partial="true"` is an incomplete report and fails closed — exactly as an
+  in-flight per-mutant status does (D36). Any **other** root attribute is off-schema.
+- **Direct children.** The only valid direct children of `<mutations>` are `<mutation>`
+  elements. Inter-element **whitespace** (real PIT and the fixture pretty-print with
+  newlines) is ignored, but any other element — or non-blank text — directly under the
+  root is **rejected, never silently discarded**.
+
+Verified against PIT's real shape so the tightening does **not** cause false rejection:
+the fixture (`test/fixtures/sixpack-mut/tools/mutation-run.sh`) emits
+`<mutations partial="false">` with newlines between mutations, and the new positive
+test `mutation-report-parser-accepts-the-real-pit-envelope` asserts that exact envelope
+(and a bare `<mutations>` root) still parse. The negative cases Codex found missing —
+`partial='true'`, a garbage `partial` value, an unexpected root attribute, and
+mixed valid-plus-invalid content (leading `<garbage/>` and trailing `<junk>`) — were
+added to `mutation-report-parser-fails-closed` **red-first**, green after.
+
+**Scope.** Parser (`bin/parse-mutation-report.bb`, envelope validation +
+`clojure.string` require) + its unit tests (the two `mutation-report-parser-*` tests)
++ docs (`mutation-report-schema.md`, this note, the D36 scope note above). Nothing
+previously CLOSED is loosened; `run-solo` and every CLOSED gate are byte-for-byte
+untouched. The runner/inspector verdict, MAC/tamper coverage, and opt-in behavior are
+**unchanged**. With this, the mutation gate's fail-closed claim matches the parser
+exactly — envelope and records.
 
 ## Known-flaky tests
 

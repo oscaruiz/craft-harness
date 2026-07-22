@@ -64,15 +64,25 @@ reason" trap) — and prints `<killed><TAB><total>`:
   `NON_VIABLE`, `EQUIVALENT`. `SURVIVED` and `NO_COVERAGE` are the only not-detected
   terminal statuses. `NON_VIABLE` is **not** excluded — PIT declares `NON_VIABLE(true)`,
   so it counts in **both** numerator and denominator (see `docs/decisions.md` D36).
-- The parser is **fail-closed on an off-schema report**: `status` must be a terminal
-  PIT status (an in-flight `STARTED`/`NOT_STARTED` marks an *incomplete* report;
-  anything else is invented), the `detected` attribute must **agree** with that
-  status's canonical `isDetected()` value (a self-contradictory `detected='true'
-  status='SURVIVED'` is rejected, never scored), and only `<mutation>` elements that
-  are **direct children** of the `<mutations>` root count (a nested `<mutation>` is
-  ignored, never smuggled in). A report with **zero mutations**, a missing/invalid
-  `detected`, a wrong root element, or malformed XML also fails closed — a gate over
-  no mutants proves nothing.
+- The parser is **fail-closed on an off-schema report** — the whole report, both the
+  root **envelope** and each mutation **record** (see D36/D37):
+  - **Envelope** (D37): the `<mutations>` root must be a *completed* PIT report. Its
+    only recognized attribute is `partial`, and it must be `"false"` (older PIT omits
+    it); an incomplete `partial="true"` report — or any other/invented root
+    attribute — fails closed. The only valid **direct children** are `<mutation>`
+    elements; any other element (a `<garbage/>` alongside real mutations) or stray
+    non-blank text under the root is rejected, never silently discarded.
+    Inter-element whitespace (pretty-printed reports) is ignored.
+  - **Records** (D36): `status` must be a terminal PIT status (an in-flight
+    `STARTED`/`NOT_STARTED` marks an *incomplete* report; anything else is invented),
+    the `detected` attribute must **agree** with that status's canonical
+    `isDetected()` value (a self-contradictory `detected='true' status='SURVIVED'` is
+    rejected, never scored), and only `<mutation>` elements that are **direct
+    children** of the `<mutations>` root count (a nested `<mutation>` is ignored,
+    never smuggled in).
+  - A report with **zero mutations**, a missing/invalid `detected`, a wrong root
+    element, or malformed XML also fails closed — a gate over no mutants proves
+    nothing.
 
 ## How the runner uses it
 
