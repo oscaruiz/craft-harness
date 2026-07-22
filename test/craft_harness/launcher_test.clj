@@ -358,6 +358,17 @@
     (doseq [e (manifest-entries fork)]
       (is (fs/exists? (fs/path toy e)) (str e " must be materialized")))))
 
+(deftest run-preflights-before-installing-anything
+  (testing "an incomplete contract fails with the D39 code and leaves no install"
+    (let [fork (make-fork!) toy (make-toy!)]
+      (write-file (fs/path toy "project.prompt") "owns:\n  **\n")
+      (git! toy "add" "project.prompt")
+      (git! toy "commit" "-q" "-m" "break contract")
+      (let [res (craft! fork {:ok? false} "run" "--project" (str toy) "--pack" pack-branch)]
+        (is (= 41 (:exit res)))
+        (is (re-find #"(?i)project.prompt.*test.*missing" (str (:out res) (:err res))))
+        (is (not (fs/exists? (fs/path toy ".craft-harness"))))))))
+
 (deftest run-keeps-project-git-history-clean
   (let [fork (make-fork!)
         toy (make-toy!)]

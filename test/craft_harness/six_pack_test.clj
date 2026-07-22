@@ -399,7 +399,7 @@
       (spit (str (fs/path shim-bin "unshare")) "#!/usr/bin/env bash\nexit 1\n")
       (sh-run {:dir shim-bin} "chmod" "+x" (str (fs/path shim-bin "unshare")))
       (let [r (run-six-env! p "happy" {"PATH" (str shim-bin ":" (System/getenv "PATH"))})]
-        (is (not (zero? (:exit r))))
+        (is (= 41 (:exit r)) "D39 contract preflight has a distinct exit")
         (is (re-find #"network: none" (:all r)))
         (is (re-find #"(?i)fail-closed" (:all r)))
         (is (not (fs/exists? (state p))) "refused before any phase ran")))))

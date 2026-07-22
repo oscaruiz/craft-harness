@@ -75,6 +75,10 @@ APPROVAL_TOKEN="$PRIVATE_EVIDENCE_DIR/approval.token"
 # R6 precondition: an approved task.md must exist before any phase runs.
 [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: run-solo refuses to start without a task"
 
+# D39 usability preflight: an additive early mirror of the contract, tool,
+# clean-tree, identity and unrelated-session checks below. Runtime gates remain.
+bash "$FORK_ROOT/bin/preflight" --project "$PROJECT" --pack solo-pack --allow-current solo
+
 # D27: the real-project contract is required and fail-closed. It supplies the
 # owned paths, exact test command, and optional ordered quality commands.
 CONTRACT_PARSER="$FORK_ROOT/bin/parse-project"

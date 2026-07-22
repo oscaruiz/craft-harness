@@ -171,6 +171,15 @@ detect_in_flight() { # prints a reason and returns 0 either way; empty = idle
       return 0
     fi
   fi
+  local six="$p/.craft-harness/six/current"
+  if [[ -d "$six" ]]; then
+    local six_status
+    six_status="$(cat "$six/status" 2>/dev/null || echo unknown)"
+    if [[ "$six_status" != "done" ]]; then
+      printf 'six-pack session in flight (status=%s) in .craft-harness/six/current/' "$six_status"
+      return 0
+    fi
+  fi
   return 0
 }
 
@@ -187,11 +196,11 @@ run_cmd() {
   [[ -d "$PROJECT/.git" ]] || die "not a git repository: $PROJECT"
   grep -qxF "$PACK" "$FORK_ROOT/PACKS" \
     || die "pack '$PACK' is not registered as supported in PACKS"
-  refuse_if_in_flight "$PROJECT" "run"
   [[ -f "$PROJECT/task.md" ]] || die "task.md not found in $PROJECT — R6: the launcher refuses to start without an approved task.md"
   local commit
   commit="$(git -C "$FORK_ROOT" rev-parse --verify --quiet "$PACK^{commit}")" \
     || die "unknown pack branch: $PACK"
+  bash "$FORK_ROOT/bin/preflight" --project "$PROJECT" --pack "$PACK"
   install_tree "$PROJECT" "$commit"
   printf '%s\n' "$PACK" > "$PROJECT/.craft-harness/pack"
   git -C "$PROJECT" rev-parse --abbrev-ref HEAD > "$PROJECT/.craft-harness/branch"

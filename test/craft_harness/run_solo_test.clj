@@ -534,6 +534,15 @@
           "commit" "-q" "-m" "maven baseline")
     dir))
 
+(defn path-without-tool
+  "The current PATH with every directory that resolves `tool` removed — so the
+   'tool absent' case holds even on hosts where the real tool is installed."
+  [tool]
+  (->> (str/split (or (System/getenv "PATH") "") #":")
+       (remove (fn [dir] (let [f (fs/path dir tool)]
+                           (and (fs/exists? f) (fs/executable? f)))))
+       (str/join ":")))
+
 (defn run-solo-maven*
   "run-solo against the Maven-shaped fixture under a CLEAN, identity-free HOME
    (no global git identity leaks in — so identity seeding is deterministic and
@@ -541,7 +550,7 @@
   [project variant on-path? extra]
   (binding [*extra-env* {"PATH" (if on-path?
                                   (str fake-mvn-dir ":" (System/getenv "PATH"))
-                                  (System/getenv "PATH"))
+                                  (path-without-tool "mvn"))
                          "HOME" (str (tmp-dir))
                          "GIT_CONFIG_NOSYSTEM" "1"}]
     (apply run-solo! project variant extra)))
@@ -615,32 +624,41 @@
       (testing "the fixture starts with NO repo-local identity"
         (is (not (zero? (:exit (sh-run {:dir p} "git" "config" "--local" "user.email"))))))
       (let [base (head p)
-            r1 (run-solo-maven! p "maven")
-            _ (approve! p (approval-token r1))
-            r2 (run-solo-maven! p "maven")]
-        (is (zero? (:exit r2)) (str "the run must complete once identity is seeded:\n" (:all r2)))
-        (is (not= base (head p)) "a candidate commit was produced")
-        (testing "the seeded harness identity authored the candidate commit"
-          (is (= "craft-harness" (str/trim (:out (git! p "log" "-1" "--format=%an")))))
-          (is (= "noreply@craft-harness.local" (str/trim (:out (git! p "log" "-1" "--format=%ae"))))))
-        (testing "the identity was seeded repo-locally (not globally)"
-          (is (= "noreply@craft-harness.local" (str/trim (local-ident p "email")))))))))
+            r1 (run-solo-maven! p "maven")]
+        (is (= "noreply@craft-harness.local" (str/trim (local-ident p "email")))
+            "preflight seeded identity before the first specify turn")
+        (approve! p (approval-token r1))
+        (let [r2 (run-solo-maven! p "maven")]
+          (is (zero? (:exit r2)) (str "the run must complete once identity is seeded:\n" (:all r2)))
+          (is (not= base (head p)) "a candidate commit was produced")
+          (testing "the seeded harness identity authored the candidate commit"
+            (is (= "craft-harness" (str/trim (:out (git! p "log" "-1" "--format=%an")))))
+            (is (= "noreply@craft-harness.local" (str/trim (:out (git! p "log" "-1" "--format=%ae"))))))
+          (testing "the identity was seeded repo-locally (not globally)"
+            (is (= "noreply@craft-harness.local" (str/trim (local-ident p "email"))))))))))
 
-(deftest an-absent-test-tool-makes-verify-fail-attributed-not-silent
-  (testing "D23: when the declared test command's tool is not on PATH, verify fails ATTRIBUTED"
+(deftest an-absent-test-tool-fails-preflight-before-any-phase
+  (testing "D39: a missing declared tool fails before specify spends an agent turn"
     (let [p (make-maven-project!)
           base (head p)
           r1 (run-solo-maven-no-mvn! p "maven")]
-      (is (zero? (:exit r1)) (str "specify must still reach the gate without the tool:\n" (:all r1)))
-      (approve! p (approval-token r1))
-      (let [r2 (run-solo-maven-no-mvn! p "maven")]
-        (is (not (zero? (:exit r2))) "a missing test tool must fail the run, not pass silently")
-        ;; EXACT attribution (D22 coda): must fail AT verify, not merely mention the
-        ;; word — and code must have produced a candidate first, so the failure is
-        ;; genuinely the absent tool at verify, not an earlier stumble (e.g. identity).
-        (is (not= base (head p)) "code produced a candidate (identity seeded); verify is what failed")
-        (is (re-find #"phase 'verify'" (:all r2)) "attributed to the verify phase specifically")
-        (is (not= "done" (status p)))))))
+      (is (= 42 (:exit r1)))
+      (is (= base (head p)) "no candidate was produced")
+      (is (nil? (status p)) "no phase/session state was created")
+      (is (re-find #"(?i)test.*mvn.*PATH" (:all r1))))))
+
+(deftest configured-developer-identity-authors-the-candidate
+  (testing "D39: preflight preserves the developer's resolved identity"
+    (let [p (make-maven-project!)]
+      (git! p "config" "user.name" "Real Developer")
+      (git! p "config" "user.email" "developer@example.test")
+      (let [r1 (run-solo-maven! p "maven")]
+        (approve! p (approval-token r1))
+        (let [r2 (run-solo-maven! p "maven")]
+          (is (zero? (:exit r2)) (:all r2))
+          (is (= "Real Developer <developer@example.test>"
+                 (str/trim (:out (git! p "log" "-1" "--format=%an <%ae>"))))))))))
+
 
 (deftest a-present-test-tool-is-invoked-through-inherited-path
   (testing "D23: when the tool IS on PATH, the phase resolves and runs it (inherited, not provisioned)"
